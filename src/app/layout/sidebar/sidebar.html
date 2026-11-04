@@ -1,0 +1,43 @@
+<div
+  class="fixed inset-y-0 left-0 z-40 flex w-[280px] flex-col border-r border-slate-200 bg-[#171923] text-slate-100 transition-transform duration-200 ease-out md:static md:translate-x-0"
+  [class.-translate-x-full]="!mobileOpen()"
+  [class.translate-x-0]="mobileOpen()"
+>
+  <div class="flex items-center gap-3 border-b border-slate-800 px-5 py-5">
+    <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-300">
+      <lucide-icon [img]="layoutIcon" class="h-5 w-5" />
+    </div>
+    <div>
+      <p class="text-lg font-semibold tracking-tight text-white">FlowForge</p>
+    </div>
+  </div>
+
+  <nav class="flex-1 space-y-1 px-3 py-5">
+    @for (item of items(); track item.route) {
+      <a
+        [routerLink]="item.route"
+        routerLinkActive="bg-indigo-500/15 text-white shadow-sm"
+        [routerLinkActiveOptions]="{ exact: item.route === '/dashboard' }"
+        class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white"
+        (click)="close()"
+      >
+        <lucide-icon [img]="item.icon" class="h-4 w-4" />
+        <span>{{ item.label }}</span>
+      </a>
+    }
+  </nav>
+
+  <div class="border-t border-slate-800 px-4 py-4 text-xs text-slate-400">
+    <p>Workspace</p>
+    <p class="mt-1 font-medium text-slate-300">Production Ops</p>
+  </div>
+</div>
+
+@if (mobileOpen()) {
+  <button
+    type="button"
+    class="fixed inset-0 z-30 bg-slate-950/30 md:hidden"
+    aria-label="Close side navigation"
+    (click)="close()"
+  ></button>
+}
