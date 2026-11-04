@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { HttpErrorResponse } from '@angular/common/http';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -24,6 +25,7 @@ import {
   LucideAngularModule,
   type LucideIconData
 } from 'lucide-angular';
+import { WorkflowApiService } from '../../../core/services/workflow-api.service';
 import type {
   NodeLibraryItem,
   WorkflowConnection,
@@ -163,12 +165,21 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
               <lucide-icon [img]="backIcon" class="h-4 w-4" />
               Back to Workflows
             </a>
+          <div class="min-w-0 flex-1">
             <input
               type="text"
               [value]="state().workflowName"
-              class="min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-semibold text-slate-900 outline-none focus:border-indigo-400"
+              class="min-w-0 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-semibold text-slate-900 outline-none focus:border-indigo-400"
               (input)="updateWorkflowName($event)"
             />
+            <textarea
+              rows="2"
+              [value]="state().workflowDescription ?? ''"
+              class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 outline-none focus:border-indigo-400"
+              placeholder="Workflow description"
+              (input)="updateWorkflowDescription($event)"
+            ></textarea>
+          </div>
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
@@ -191,8 +202,18 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
             <button type="button" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="fitCanvas()">
               Fit canvas
             </button>
-            <button type="button" class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-500" (click)="saveState()">
-              Save
+            @if (saveMessage()) {
+              <span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                {{ saveMessage() }}
+              </span>
+            }
+            @if (saveError()) {
+              <span class="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700">
+                {{ saveError() }}
+              </span>
+            }
+            <button type="button" class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300" [disabled]="isLoading()" (click)="saveState()">
+              {{ isLoading() ? 'Saving...' : 'Save' }}
             </button>
             <button type="button" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800" (click)="runPlaceholder()">
               Run / Test
@@ -267,17 +288,23 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
               }
 
               <svg class="absolute inset-0 h-full w-full overflow-visible">
+                <defs>
+                  <marker id="connection-arrow-head" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+                    <path d="M 0 0 L 10 4 L 0 8 z" fill="currentColor" class="text-indigo-500"></path>
+                  </marker>
+                </defs>
                 @for (connection of state().connections; track connection.id) {
                   <path
                     [attr.d]="buildConnectionPath(connection)"
                     class="fill-none stroke-slate-400 stroke-[2.5]"
                     [class.stroke-indigo-500]="selectedConnectionId() === connection.id"
                     [class.stroke-[3.5]]="selectedConnectionId() === connection.id"
+                    marker-end="url(#connection-arrow-head)"
                     (click)="selectConnection(connection.id)"
                   ></path>
                 }
                 @if (pendingConnection()) {
-                  <path [attr.d]="buildPendingConnectionPath()" class="fill-none stroke-indigo-500 stroke-[2.5] stroke-dasharray-6"></path>
+                  <path [attr.d]="buildPendingConnectionPath()" class="fill-none stroke-indigo-500 stroke-[2.5] stroke-dasharray-6" marker-end="url(#connection-arrow-head)"></path>
                 }
               </svg>
 
@@ -436,12 +463,22 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 export class WorkflowEditorComponent {
   protected readonly router = inject(Router);
   protected readonly route = inject(ActivatedRoute);
+  protected readonly workflowApi = inject(WorkflowApiService);
   protected readonly storageKey = 'flowforge-workflow-states';
   protected readonly history = signal<WorkflowEditorState[]>([]);
   protected readonly historyIndex = signal(0);
+  protected readonly isLoading = signal(false);
+  protected readonly saveMessage = signal<string | null>(null);
+  protected readonly saveError = signal<string | null>(null);
+  protected readonly workflowId = signal<string | null>(null);
 
   constructor() {
+    const routeId = this.route.snapshot.paramMap.get('id');
+    this.workflowId.set(routeId);
     this.history.set([this.loadInitialState()]);
+    if (routeId) {
+      this.loadWorkflowFromApi(routeId);
+    }
   }
   protected readonly state = computed(() => this.history()[this.historyIndex()]);
   protected readonly nodeSearch = signal('');
@@ -539,6 +576,15 @@ export class WorkflowEditorComponent {
     }
 
     this.pushState({ ...this.state(), workflowName: target.value, isDirty: true });
+  }
+
+  protected updateWorkflowDescription(event: Event): void {
+    const target = event.target as HTMLTextAreaElement | null;
+    if (!target) {
+      return;
+    }
+
+    this.pushState({ ...this.state(), workflowDescription: target.value, isDirty: true });
   }
 
   protected updateSelectedNodeConfig(key: string, event: Event): void {
@@ -830,9 +876,60 @@ export class WorkflowEditorComponent {
   }
 
   protected saveState(): void {
+    const id = this.workflowId();
     const nextState = { ...this.state(), isDirty: false };
-    this.pushState(nextState);
-    this.persistWorkflowState(nextState);
+    const payload = {
+      name: nextState.workflowName.trim() || 'Untitled Workflow',
+      description: nextState.workflowDescription ?? 'No description provided.',
+      active: true,
+      definition: {
+        workflowId: id ?? nextState.workflowId,
+        workflowName: nextState.workflowName.trim() || 'Untitled Workflow',
+        nodes: nextState.nodes,
+        connections: nextState.connections,
+        selectedNodeId: nextState.selectedNodeId,
+        selectedConnectionId: nextState.selectedConnectionId,
+        isDirty: false
+      }
+    };
+
+    if (!id) {
+      this.pushState(nextState);
+      this.persistWorkflowState(nextState);
+      this.saveMessage.set('Draft saved locally');
+      this.saveError.set(null);
+      return;
+    }
+
+    this.isLoading.set(true);
+    this.saveError.set(null);
+    this.saveMessage.set(null);
+
+    this.workflowApi.updateWorkflow(id, payload).subscribe({
+      next: (updatedWorkflow) => {
+        this.isLoading.set(false);
+        this.saveMessage.set('Workflow saved');
+        this.saveError.set(null);
+        this.workflowId.set(updatedWorkflow.id ?? id);
+        const backendState: WorkflowEditorState = {
+          workflowId: updatedWorkflow.id ?? id,
+          workflowName: updatedWorkflow.name,
+          workflowDescription: updatedWorkflow.description ?? nextState.workflowDescription ?? '',
+          nodes: nextState.nodes,
+          connections: nextState.connections,
+          selectedNodeId: nextState.selectedNodeId,
+          selectedConnectionId: nextState.selectedConnectionId,
+          isDirty: false
+        };
+        this.pushState(backendState);
+        this.persistWorkflowState(backendState);
+      },
+      error: (error: HttpErrorResponse) => {
+        this.isLoading.set(false);
+        this.saveError.set(error?.error?.message ?? 'Unable to save workflow');
+        this.saveMessage.set(null);
+      }
+    });
   }
 
   protected runPlaceholder(): void {
@@ -899,5 +996,54 @@ export class WorkflowEditorComponent {
     } catch {
       // Ignore storage failures in mock-front-end mode.
     }
+  }
+
+  protected loadWorkflowFromApi(workflowId: string): void {
+    this.isLoading.set(true);
+    this.workflowApi.getWorkflow(workflowId).subscribe({
+      next: (workflow) => {
+        this.isLoading.set(false);
+        const existingState = this.loadWorkflowState(workflowId);
+        const definition = existingState ?? {
+          workflowId,
+          workflowName: workflow.name,
+          workflowDescription: workflow.description ?? '',
+          nodes: [],
+          connections: [],
+          selectedNodeId: null,
+          selectedConnectionId: null,
+          isDirty: false
+        };
+
+        const parsedDefinition = (workflow as { definition?: Record<string, unknown> }).definition ?? {} as Record<string, unknown>;
+        const workflowNameFromDefinition = parsedDefinition['workflowName'];
+        const workflowNodes = parsedDefinition['nodes'];
+        const workflowConnections = parsedDefinition['connections'];
+        const selectedNodeId = parsedDefinition['selectedNodeId'];
+        const selectedConnectionId = parsedDefinition['selectedConnectionId'];
+
+        const nextState: WorkflowEditorState = {
+          workflowId: workflow.id,
+          workflowName: (workflowNameFromDefinition as string | undefined) ?? workflow.name,
+          workflowDescription: workflow.description ?? (workflowNameFromDefinition ? '' : definition.workflowDescription ?? ''),
+          nodes: Array.isArray(workflowNodes) ? (workflowNodes as WorkflowNode[]) : definition.nodes,
+          connections: Array.isArray(workflowConnections) ? (workflowConnections as WorkflowConnection[]) : definition.connections,
+          selectedNodeId: (selectedNodeId as string | null | undefined) ?? definition.selectedNodeId,
+          selectedConnectionId: (selectedConnectionId as string | null | undefined) ?? definition.selectedConnectionId,
+          isDirty: false
+        };
+
+        this.history.set([nextState]);
+        this.historyIndex.set(0);
+        this.persistWorkflowState(nextState);
+        this.saveMessage.set('Workflow loaded');
+        this.saveError.set(null);
+      },
+      error: (error: HttpErrorResponse) => {
+        this.isLoading.set(false);
+        this.saveError.set(error?.error?.message ?? 'Unable to load workflow');
+        this.saveMessage.set(null);
+      }
+    });
   }
 }

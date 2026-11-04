@@ -28,6 +28,10 @@ export class WorkflowApiService {
   private readonly http = inject(HttpClient);
   private readonly baseUrl = `${environment.apiBaseUrl}/workflows`;
 
+  getWorkflow(id: string): Observable<WorkflowApiResponse> {
+    return this.http.get<WorkflowApiResponse>(`${this.baseUrl}/${id}`);
+  }
+
   listWorkflows(): Observable<Workflow[]> {
     return this.http.get<WorkflowApiResponse[]>(this.baseUrl).pipe(
       map((items) => items.map((item) => this.toWorkflow(item)))

@@ -40,6 +40,7 @@ export interface WorkflowConnection {
 export interface WorkflowEditorState {
   workflowId: string;
   workflowName: string;
+  workflowDescription?: string;
   nodes: WorkflowNode[];
   connections: WorkflowConnection[];
   selectedNodeId: string | null;
