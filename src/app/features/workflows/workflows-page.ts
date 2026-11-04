@@ -1,7 +1,8 @@
-import { Component, computed, signal } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { Component, computed, inject, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Ellipsis, Search, Workflow as WorkflowIcon, LucideAngularModule } from 'lucide-angular';
 import type { Workflow, WorkflowSortOption, WorkflowStatus, WorkflowStatusFilter, WorkflowViewMode } from '../../core/models/workflow.model';
+import { WorkflowApiService } from '../../core/services/workflow-api.service';
 import { MainLayoutComponent } from '../../layout/main-layout/main-layout';
 
 const workflowSeed: Workflow[] = [
@@ -470,7 +471,9 @@ const workflowSeed: Workflow[] = [
   host: { class: 'block' }
 })
 export class WorkflowsPageComponent {
-  protected readonly workflows = signal<Workflow[]>(this.getInitialWorkflows());
+  private readonly workflowApi = inject(WorkflowApiService);
+
+  protected readonly workflows = signal<Workflow[]>(workflowSeed);
   protected readonly search = signal('');
   protected readonly sortBy = signal<WorkflowSortOption>('recently-updated');
   protected readonly statusFilter = signal<WorkflowStatusFilter>('All');
@@ -488,40 +491,31 @@ export class WorkflowsPageComponent {
 
   protected readonly pageSize = 8;
 
-  protected getInitialWorkflows(): Workflow[] {
-    const persisted = this.readWorkflowStore();
-    const combined = [...workflowSeed, ...persisted];
-    const seen = new Set<string>();
+  constructor() {
+    this.loadWorkflows();
+  }
 
-    return combined.filter((workflow) => {
-      const duplicate = seen.has(workflow.id);
-      seen.add(workflow.id);
-      return !duplicate;
+  protected loadWorkflows(): void {
+    this.workflowApi.listWorkflows().subscribe({
+      next: (workflows) => {
+        this.workflows.set(workflows.length > 0 ? workflows : workflowSeed);
+      },
+      error: () => {
+        this.workflows.set(workflowSeed);
+      }
     });
   }
 
-  protected readWorkflowStore(): Workflow[] {
-    try {
-      const raw = localStorage.getItem('flowforge-workflow-states');
-      if (!raw) {
-        return [];
-      }
-
-      const entries = JSON.parse(raw) as Record<string, { workflowId: string; workflowName: string }>;
-      return Object.values(entries).map((entry) => ({
-        id: entry.workflowId,
-        name: entry.workflowName,
-        description: 'Generated from a reusable template',
-        status: 'Inactive',
-        lastUpdated: 'just now',
-        lastExecution: 'Not run yet',
-        executionCount: 0,
-        successRate: 0,
-        createdBy: 'Template'
-      }));
-    } catch {
-      return [];
-    }
+  protected buildWorkflowDefinition(name: string): Record<string, unknown> {
+    return {
+      workflowId: `wf-${Date.now()}`,
+      workflowName: name,
+      nodes: [],
+      connections: [],
+      selectedNodeId: null,
+      selectedConnectionId: null,
+      isDirty: false
+    };
   }
 
   protected readonly stats = computed(() => {
@@ -608,15 +602,28 @@ export class WorkflowsPageComponent {
   }
 
   protected toggleWorkflowStatus(workflowId: string): void {
-    const nextStatus: WorkflowStatus = this.workflows().find((workflow) => workflow.id === workflowId)?.status === 'Active' ? 'Inactive' : 'Active';
-    this.workflows.update((items) =>
-      items.map((workflow) =>
-        workflow.id === workflowId
-          ? { ...workflow, status: nextStatus, lastUpdated: 'just now' }
-          : workflow
-      )
-    );
-    this.menuOpenId.set(null);
+    const workflow = this.workflows().find((item) => item.id === workflowId);
+    if (!workflow) {
+      return;
+    }
+
+    const nextStatus: WorkflowStatus = workflow.status === 'Active' ? 'Inactive' : 'Active';
+    this.workflowApi
+      .updateWorkflow(workflowId, {
+        name: workflow.name,
+        description: workflow.description,
+        active: nextStatus === 'Active',
+        definition: this.buildWorkflowDefinition(workflow.name)
+      })
+      .subscribe({
+        next: (updatedWorkflow) => {
+          this.workflows.update((items) => items.map((item) => (item.id === workflowId ? updatedWorkflow : item)));
+          this.menuOpenId.set(null);
+        },
+        error: () => {
+          this.menuOpenId.set(null);
+        }
+      });
   }
 
   protected duplicateWorkflow(workflowId: string): void {
@@ -626,19 +633,22 @@ export class WorkflowsPageComponent {
       return;
     }
 
-    const copiedWorkflow: Workflow = {
-      ...workflow,
-      id: `wf-${Date.now()}`,
-      name: `${workflow.name} Copy`,
-      lastUpdated: 'just now',
-      lastExecution: 'Not run yet',
-      executionCount: 0,
-      successRate: 0,
-      createdBy: 'You'
-    };
-
-    this.workflows.update((items) => [copiedWorkflow, ...items]);
-    this.menuOpenId.set(null);
+    this.workflowApi
+      .createWorkflow({
+        name: `${workflow.name} Copy`,
+        description: workflow.description,
+        active: false,
+        definition: this.buildWorkflowDefinition(`${workflow.name} Copy`)
+      })
+      .subscribe({
+        next: (createdWorkflow) => {
+          this.workflows.update((items) => [createdWorkflow, ...items]);
+          this.menuOpenId.set(null);
+        },
+        error: () => {
+          this.menuOpenId.set(null);
+        }
+      });
   }
 
   protected deleteWorkflow(workflowId: string): void {
@@ -653,9 +663,16 @@ export class WorkflowsPageComponent {
       return;
     }
 
-    this.workflows.update((items) => items.filter((item) => item.id !== workflowId));
-    this.menuOpenId.set(null);
-    this.currentPage.set(Math.min(this.currentPage(), this.pageCount()));
+    this.workflowApi.deleteWorkflow(workflowId).subscribe({
+      next: () => {
+        this.workflows.update((items) => items.filter((item) => item.id !== workflowId));
+        this.menuOpenId.set(null);
+        this.currentPage.set(Math.min(this.currentPage(), this.pageCount()));
+      },
+      error: () => {
+        this.menuOpenId.set(null);
+      }
+    });
   }
 
   protected openCreateDialog(): void {
@@ -686,21 +703,23 @@ export class WorkflowsPageComponent {
       return;
     }
 
-    const newWorkflow: Workflow = {
-      id: `wf-${Date.now()}`,
-      name,
-      description: this.newWorkflowDescription().trim() || 'A new workflow created from the management dashboard.',
-      status: 'Inactive',
-      lastUpdated: 'just now',
-      lastExecution: 'Not run yet',
-      executionCount: 0,
-      successRate: 0,
-      createdBy: 'You'
-    };
-
-    this.workflows.update((items) => [newWorkflow, ...items]);
-    this.closeCreateDialog();
-    this.currentPage.set(1);
+    this.workflowApi
+      .createWorkflow({
+        name,
+        description: this.newWorkflowDescription().trim() || 'A new workflow created from the management dashboard.',
+        active: true,
+        definition: this.buildWorkflowDefinition(name)
+      })
+      .subscribe({
+        next: (newWorkflow) => {
+          this.workflows.update((items) => [newWorkflow, ...items]);
+          this.closeCreateDialog();
+          this.currentPage.set(1);
+        },
+        error: () => {
+          this.closeCreateDialog();
+        }
+      });
   }
 
   protected previousPage(): void {
