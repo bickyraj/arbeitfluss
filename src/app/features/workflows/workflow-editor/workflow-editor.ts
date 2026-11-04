@@ -157,7 +157,7 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
   standalone: true,
   imports: [LucideAngularModule, RouterLink],
   template: `
-    <div class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900">
+    <div class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900" (window:pointerup)="handleGlobalPointerUp($event)">
       <header class="border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-5">
         <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div class="flex items-center gap-3">
@@ -266,13 +266,12 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
         <main class="relative flex min-w-0 flex-1 flex-col bg-[#F8FAFC]">
           <div
             class="relative min-h-[640px] flex-1 overflow-hidden"
+            data-workflow-canvas
             [style.background-size]="'18px 18px'"
             [style.background-image]="'radial-gradient(circle, rgba(148, 163, 184, 0.28) 1.2px, transparent 0)'"
             (dragover)="allowCanvasDrop($event)"
             (drop)="onCanvasDrop($event)"
             (pointermove)="handleCanvasPointerMove($event)"
-            (pointerup)="handleCanvasPointerUp()"
-            (pointerleave)="handleCanvasPointerUp()"
             (mousedown)="startPanning($event)"
           >
             <div
@@ -310,7 +309,7 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 
               @for (node of state().nodes; track node.id) {
                 <div
-                  class="absolute w-[180px] cursor-grab rounded-2xl border bg-white p-3 shadow-[0_14px_28px_rgba(15,23,42,0.08)]"
+                  class="absolute h-[120px] w-[180px] cursor-grab rounded-2xl border bg-white p-3 shadow-[0_14px_28px_rgba(15,23,42,0.08)]"
                   [style.left.px]="node.position.x"
                   [style.top.px]="node.position.y"
                   [class.border-indigo-500]="selectedNodeId() === node.id"
@@ -331,21 +330,26 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 
                   <p class="text-[11px] leading-4 text-slate-500">{{ node.description }}</p>
 
-                  <div class="mt-3 flex items-center justify-between">
-                    <div class="flex items-center gap-2">
-                      <button type="button" class="h-4 w-4 rounded-full border-2 border-slate-300 bg-white" (click)="connectInputHandle($event, node.id)"></button>
-                      <span class="text-[10px] uppercase tracking-[0.12em] text-slate-400">in</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-[10px] uppercase tracking-[0.12em] text-slate-400">out</span>
-                      <button
-                        type="button"
-                        class="h-4 w-4 rounded-full border-2 border-indigo-500 bg-indigo-50"
-                        (click)="connectOutputHandle($event, node.id)"
-                        (pointerdown)="beginConnection($event, node.id)"
-                      ></button>
-                    </div>
-                  </div>
+                  <button
+                    type="button"
+                    class="absolute -left-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white"
+                    [attr.data-connection-node-id]="node.id"
+                    data-connection-handle="input"
+                    [attr.aria-label]="'Connect to ' + node.name"
+                    (pointerdown)="stopHandlePointerDown($event)"
+                  >
+                    <span class="h-2.5 w-2.5 rounded-full border-2 border-slate-400 bg-white"></span>
+                  </button>
+                  <button
+                    type="button"
+                    class="absolute -right-3 top-1/2 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                    [attr.data-connection-node-id]="node.id"
+                    data-connection-handle="output"
+                    [attr.aria-label]="'Start connection from ' + node.name"
+                    (pointerdown)="beginConnection($event, node.id)"
+                  >
+                    <span class="h-2.5 w-2.5 rounded-full border-2 border-indigo-500 bg-indigo-50"></span>
+                  </button>
                 </div>
               }
             </div>
@@ -485,7 +489,7 @@ export class WorkflowEditorComponent {
   protected readonly zoom = signal(1);
   protected readonly panX = signal(0);
   protected readonly panY = signal(0);
-  protected readonly pendingConnection = signal<{ sourceNodeId: string; x: number; y: number } | null>(null);
+  protected readonly pendingConnection = signal<{ sourceNodeId: string; sourceHandle: string; x: number; y: number } | null>(null);
   protected readonly draggingNodeId = signal<string | null>(null);
   protected readonly dragOffset = signal({ x: 0, y: 0 });
   protected readonly panning = signal(false);
@@ -668,55 +672,26 @@ export class WorkflowEditorComponent {
     });
   }
 
-  protected beginConnection(event: Event, nodeId: string): void {
+  protected beginConnection(event: PointerEvent, nodeId: string): void {
     event.preventDefault();
     event.stopPropagation();
-    this.pendingConnection.set({ sourceNodeId: nodeId, x: 0, y: 0 });
-  }
-
-  protected connectOutputHandle(event: Event, nodeId: string): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.pendingConnection.set({ sourceNodeId: nodeId, x: 0, y: 0 });
-  }
-
-  protected connectInputHandle(event: Event, nodeId: string): void {
-    event.preventDefault();
-    event.stopPropagation();
-    const source = this.pendingConnection();
-    if (!source) {
-      return;
-    }
-
-    if (source.sourceNodeId === nodeId) {
-      this.pendingConnection.set(null);
-      return;
-    }
-
-    const exists = this.state().connections.some(
-      (connection) => connection.sourceNodeId === source.sourceNodeId && connection.targetNodeId === nodeId
-    );
-    if (exists) {
-      this.pendingConnection.set(null);
-      return;
-    }
-
-    const nextConnection: WorkflowConnection = {
-      id: `conn-${Date.now()}`,
-      sourceNodeId: source.sourceNodeId,
-      sourceHandle: 'output',
-      targetNodeId: nodeId,
-      targetHandle: 'input'
-    };
-
-    this.pushState({
-      ...this.state(),
-      connections: [...this.state().connections, nextConnection],
-      selectedConnectionId: nextConnection.id,
-      selectedNodeId: null,
-      isDirty: true
+    const handle = event.currentTarget as HTMLElement;
+    const canvas = handle.closest<HTMLElement>('[data-workflow-canvas]');
+    const canvasRect = canvas?.getBoundingClientRect();
+    const handleRect = handle.getBoundingClientRect();
+    const x = canvasRect ? (handleRect.left + handleRect.width / 2 - canvasRect.left - this.panX()) / this.zoom() : 0;
+    const y = canvasRect ? (handleRect.top + handleRect.height / 2 - canvasRect.top - this.panY()) / this.zoom() : 0;
+    this.pendingConnection.set({
+      sourceNodeId: nodeId,
+      sourceHandle: handle.dataset['connectionHandle'] ?? 'output',
+      x,
+      y
     });
-    this.pendingConnection.set(null);
+  }
+
+  protected stopHandlePointerDown(event: PointerEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   protected handleCanvasPointerMove(event: MouseEvent): void {
@@ -759,10 +734,60 @@ export class WorkflowEditorComponent {
     }
   }
 
-  protected handleCanvasPointerUp(): void {
-    this.pendingConnection.set(null);
+  protected handleGlobalPointerUp(event: PointerEvent): void {
+    const pending = this.pendingConnection();
+    if (pending) {
+      const target = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>('[data-connection-handle="input"][data-connection-node-id]');
+      if (target) {
+        this.completeConnection(
+          pending.sourceNodeId,
+          pending.sourceHandle,
+          target.dataset['connectionNodeId'] ?? '',
+          target.dataset['connectionHandle'] ?? ''
+        );
+      }
+      this.pendingConnection.set(null);
+    }
+
     this.draggingNodeId.set(null);
     this.panning.set(false);
+  }
+
+  private completeConnection(sourceNodeId: string, sourceHandle: string, targetNodeId: string, targetHandle: string): void {
+    const nodes = this.state().nodes;
+    const sourceExists = nodes.some((node) => node.id === sourceNodeId);
+    const targetExists = nodes.some((node) => node.id === targetNodeId);
+    if (!sourceExists || !targetExists || sourceNodeId === targetNodeId || sourceHandle !== 'output' || targetHandle !== 'input') {
+      return;
+    }
+
+    const alreadyConnected = this.state().connections.some(
+      (connection) =>
+        connection.sourceNodeId === sourceNodeId &&
+        connection.sourceHandle === sourceHandle &&
+        connection.targetNodeId === targetNodeId &&
+        connection.targetHandle === targetHandle
+    );
+    if (alreadyConnected) {
+      return;
+    }
+
+    const connection: WorkflowConnection = {
+      id: `conn-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      sourceNodeId,
+      sourceHandle,
+      targetNodeId,
+      targetHandle
+    };
+    this.pushState({
+      ...this.state(),
+      connections: [...this.state().connections, connection],
+      selectedConnectionId: connection.id,
+      selectedNodeId: null,
+      isDirty: true
+    });
   }
 
   protected startNodeDrag(event: MouseEvent, nodeId: string): void {
@@ -837,9 +862,9 @@ export class WorkflowEditorComponent {
     }
 
     const startX = sourceNode.position.x + 180;
-    const startY = sourceNode.position.y + 58;
+    const startY = sourceNode.position.y + 60;
     const endX = targetNode.position.x;
-    const endY = targetNode.position.y + 58;
+    const endY = targetNode.position.y + 60;
     const midX = (startX + endX) / 2;
     return `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
   }
@@ -856,7 +881,7 @@ export class WorkflowEditorComponent {
     }
 
     const startX = sourceNode.position.x + 180;
-    const startY = sourceNode.position.y + 58;
+    const startY = sourceNode.position.y + 60;
     const midX = (startX + pending.x) / 2;
     return `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${pending.y}, ${pending.x} ${pending.y}`;
   }
