@@ -4,9 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowforge.entity.ExecutionLog;
 import com.flowforge.entity.Execution;
+import com.flowforge.entity.NodeExecution;
 import com.flowforge.model.execution.ExecutionLogLevel;
 import com.flowforge.repository.ExecutionLogRepository;
 import com.flowforge.repository.ExecutionRepository;
+import com.flowforge.repository.NodeExecutionRepository;
+import com.flowforge.repository.WorkflowRepository;
+import com.flowforge.service.ExecutionStateService;
+import com.flowforge.service.ExecutionRecoveryService;
 import com.flowforge.model.execution.ExecutionStatus;
 import com.flowforge.model.execution.NodeExecutionStatus;
 import org.junit.jupiter.api.Test;
@@ -50,6 +55,10 @@ class ExecutionApiIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private ExecutionRepository executionRepository;
     @Autowired private ExecutionLogRepository executionLogRepository;
+    @Autowired private NodeExecutionRepository nodeExecutionRepository;
+    @Autowired private WorkflowRepository workflowRepository;
+    @Autowired private ExecutionStateService executionStateService;
+    @Autowired private ExecutionRecoveryService executionRecoveryService;
 
     @Test
     void executesSnapshotAndExposesExecutionHistoryNodesAndChronologicalLogs() throws Exception {
@@ -120,6 +129,157 @@ class ExecutionApiIntegrationTest {
         mockMvc.perform(post("/api/workflows/{id}/executions", workflowId))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Connection 'broken' references missing node 'missing'"));
+    }
+
+    @Test
+    void retriesFailedExecutionFromImmutableSnapshotInputAndTimeout() throws Exception {
+        String definition = """
+                {
+                  "nodes":[
+                    {"id":"trigger","type":"manual-trigger","configuration":{}},
+                    {"id":"unsupported","type":"set-data","configuration":{}}
+                  ],
+                  "connections":[
+                    {"id":"edge","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"unsupported","targetHandle":"input"}
+                  ]
+                }
+                """;
+        UUID workflowId = createWorkflow(definition);
+        UUID originalId = startExecution(
+                workflowId,
+                "{\"triggerInput\":{\"request\":\"preserve-me\"},\"timeoutSeconds\":42}"
+        );
+        awaitStatus(originalId, ExecutionStatus.FAILED);
+
+        Execution originalBefore = executionRepository.findById(originalId).orElseThrow();
+        String originalError = originalBefore.getErrorMessage();
+        long originalLogCount = executionLogRepository.findAllByExecution_IdOrderByCreatedAtAscIdAsc(originalId).size();
+
+        mockMvc.perform(put("/api/workflows/{id}", workflowId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Edited workflow","definition":{"nodes":[{"id":"trigger","type":"manual-trigger","configuration":{}}],"connections":[]}}
+                                """))
+                .andExpect(status().isOk());
+
+        String retryResponse = mockMvc.perform(post("/api/executions/{id}/retry", originalId))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value("QUEUED"))
+                .andReturn().getResponse().getContentAsString();
+        UUID retryId = UUID.fromString(objectMapper.readTree(retryResponse).path("id").asText());
+        awaitStatus(retryId, ExecutionStatus.FAILED);
+
+        Execution retry = executionRepository.findById(retryId).orElseThrow();
+        assertThat(retry.getRetryOfExecutionId()).isEqualTo(originalId);
+        assertThat(retry.getTimeoutSeconds()).isEqualTo(42);
+        assertThat(retry.getWorkflowName()).isEqualTo(originalBefore.getWorkflowName());
+        assertThat(retry.getWorkflowDefinition()).isEqualTo(originalBefore.getWorkflowDefinition());
+        assertThat(retry.getTriggerInput()).isEqualTo(originalBefore.getTriggerInput());
+        assertThat(executionRepository.findById(originalId).orElseThrow().getErrorMessage()).isEqualTo(originalError);
+        assertThat(executionLogRepository.findAllByExecution_IdOrderByCreatedAtAscIdAsc(originalId))
+                .hasSize((int) originalLogCount);
+
+        mockMvc.perform(get("/api/executions/{id}/nodes", retryId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].inputData.request").value("preserve-me"));
+        String history = mockMvc.perform(get("/api/executions")
+                        .param("page", "0")
+                        .param("size", "10")
+                        .param("search", "Execution Fixture"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        JsonNode historyContent = objectMapper.readTree(history).path("content");
+        assertThat(historyContent.toString()).contains(originalId.toString(), retryId.toString());
+    }
+
+    @Test
+    void rejectsExecutionTimeoutOutsideTheSupportedRange() throws Exception {
+        UUID workflowId = createWorkflow();
+        mockMvc.perform(post("/api/workflows/{id}/executions", workflowId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"timeoutSeconds\":3601}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void recoveryMarksInterruptedNodeFailedAndPreservesEarlierOutputs() throws Exception {
+        UUID workflowId = createWorkflow();
+        var workflow = workflowRepository.findById(workflowId).orElseThrow();
+        Execution interrupted = executionRepository.saveAndFlush(new Execution(
+                workflow,
+                "Execution Fixture",
+                objectMapper.readTree(DEFINITION),
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL,
+                objectMapper.createObjectNode(),
+                300,
+                null
+        ));
+        interrupted.transitionTo(ExecutionStatus.RUNNING, null);
+        executionRepository.saveAndFlush(interrupted);
+        NodeExecution completed = new NodeExecution(interrupted, "node-trigger", "manual-trigger");
+        completed.transitionTo(NodeExecutionStatus.RUNNING, null, null, null);
+        completed.transitionTo(NodeExecutionStatus.SUCCEEDED, null, objectMapper.createObjectNode().put("ok", true), null);
+        NodeExecution active = new NodeExecution(interrupted, "node-output", "log-message");
+        active.transitionTo(NodeExecutionStatus.RUNNING, objectMapper.createObjectNode().put("input", 1), null, null);
+        nodeExecutionRepository.saveAllAndFlush(List.of(completed, active));
+
+        executionStateService.recoverInterruptedExecution(interrupted.getId());
+
+        Execution recovered = executionRepository.findById(interrupted.getId()).orElseThrow();
+        assertThat(recovered.getStatus()).isEqualTo(ExecutionStatus.FAILED);
+        assertThat(recovered.getErrorCode()).isEqualTo("EXECUTION_INTERRUPTED");
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(interrupted.getId(), "node-trigger")
+                .orElseThrow().getOutputData().path("ok").asBoolean()).isTrue();
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(interrupted.getId(), "node-output")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.FAILED);
+    }
+
+    @Test
+    void queuedCancellationIsTerminalAndSkipsEveryPendingNode() throws Exception {
+        UUID workflowId = createWorkflow();
+        Execution queued = executionRepository.saveAndFlush(new Execution(
+                workflowRepository.findById(workflowId).orElseThrow(),
+                "Execution Fixture",
+                objectMapper.readTree(DEFINITION),
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL,
+                objectMapper.createObjectNode(),
+                300,
+                null
+        ));
+        nodeExecutionRepository.saveAllAndFlush(List.of(
+                new NodeExecution(queued, "node-trigger", "manual-trigger"),
+                new NodeExecution(queued, "node-output", "log-message")
+        ));
+
+        mockMvc.perform(post("/api/executions/{id}/cancel", queued.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+        assertThat(nodeExecutionRepository.findAllByExecution_Id(queued.getId()))
+                .allSatisfy(node -> assertThat(node.getStatus()).isEqualTo(NodeExecutionStatus.SKIPPED));
+        mockMvc.perform(post("/api/executions/{id}/cancel", queued.getId()))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void recoveryRedispatchesPersistedQueuedExecution() throws Exception {
+        UUID workflowId = createWorkflow();
+        Execution queued = executionRepository.saveAndFlush(new Execution(
+                workflowRepository.findById(workflowId).orElseThrow(),
+                "Execution Fixture",
+                objectMapper.readTree(DEFINITION),
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL,
+                objectMapper.createObjectNode(),
+                300,
+                null
+        ));
+        nodeExecutionRepository.saveAllAndFlush(List.of(
+                new NodeExecution(queued, "node-trigger", "manual-trigger"),
+                new NodeExecution(queued, "node-output", "log-message")
+        ));
+
+        executionRecoveryService.redispatchQueuedExecutions();
+
+        awaitStatus(queued.getId(), ExecutionStatus.SUCCEEDED);
     }
 
     @Test

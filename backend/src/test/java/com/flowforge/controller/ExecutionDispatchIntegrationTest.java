@@ -21,11 +21,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -49,43 +52,13 @@ class ExecutionDispatchIntegrationTest {
 
     @Test
     void dispatchesAfterCommitTransitionsThroughRunningAndReachesTerminalState() throws Exception {
-        String workflowResponse = mockMvc.perform(post("/api/workflows")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "name":"Dispatch Test",
-                                  "description":"Async execution integration fixture",
-                                  "active":true,
-                                  "definition":{
-                                    "nodes":[
-                                      {"id":"trigger","type":"manual-trigger","configuration":{}},
-                                      {"id":"blocking","type":"test-blocking","configuration":{}}
-                                    ],
-                                    "connections":[
-                                      {"id":"edge","sourceNodeId":"trigger","sourceHandle":"output",
-                                       "targetNodeId":"blocking","targetHandle":"input"}
-                                    ]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        UUID workflowId = UUID.fromString(objectMapper.readTree(workflowResponse).path("id").asText());
-
-        String startResponse = mockMvc.perform(post("/api/workflows/{id}/executions", workflowId)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"triggerInput\":{\"user\":\"Alex\"}}"))
-                .andExpect(status().isAccepted())
-                .andReturn().getResponse().getContentAsString();
-        JsonNode startBody = objectMapper.readTree(startResponse);
-        assertThat(startBody.path("status").asText()).isEqualTo("QUEUED");
-        UUID executionId = UUID.fromString(startBody.path("id").asText());
+        UUID workflowId = createBlockingWorkflow(false);
+        UUID executionId = startExecution(workflowId, "{\"triggerInput\":{\"user\":\"Alex\"}}");
 
         try {
             assertThat(executorStarted.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(executionRepository.findById(executionId).orElseThrow().getStatus())
                     .isEqualTo(ExecutionStatus.RUNNING);
-
             var runningNode = nodeExecutionRepository
                     .findByExecution_IdAndWorkflowNodeId(executionId, "blocking")
                     .orElseThrow();
@@ -95,18 +68,109 @@ class ExecutionDispatchIntegrationTest {
             allowExecutorToFinish.countDown();
         }
 
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        ExecutionStatus status = ExecutionStatus.RUNNING;
-        while (System.nanoTime() < deadline) {
-            status = executionRepository.findById(executionId).orElseThrow().getStatus();
-            if (status == ExecutionStatus.SUCCEEDED || status == ExecutionStatus.FAILED) {
-                break;
-            }
-            Thread.sleep(10);
-        }
-        assertThat(status).isEqualTo(ExecutionStatus.SUCCEEDED);
+        awaitStatus(executionId, ExecutionStatus.SUCCEEDED);
         assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "blocking")
                 .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.SUCCEEDED);
+    }
+
+    @Test
+    void cancellationWaitsForRunningNodeAndSkipsItsDownstreamWork() throws Exception {
+        UUID workflowId = createBlockingWorkflow(true);
+        UUID executionId = startExecution(workflowId, "{\"triggerInput\":{}}");
+
+        assertThat(executorStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        try (ExecutorService callers = Executors.newFixedThreadPool(2)) {
+            var firstCancel = callers.submit(() -> cancelStatus(executionId));
+            var secondCancel = callers.submit(() -> cancelStatus(executionId));
+            assertThat(firstCancel.get(5, TimeUnit.SECONDS)).isEqualTo(202);
+            assertThat(secondCancel.get(5, TimeUnit.SECONDS)).isEqualTo(202);
+        }
+        assertThat(executionRepository.findById(executionId).orElseThrow().getStatus())
+                .isEqualTo(ExecutionStatus.CANCELLING);
+        mockMvc.perform(post("/api/executions/{id}/retry", executionId))
+                .andExpect(status().isConflict());
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "blocking")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.RUNNING);
+
+        allowExecutorToFinish.countDown();
+        awaitStatus(executionId, ExecutionStatus.CANCELLED);
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "blocking")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.SUCCEEDED);
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "after")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.SKIPPED);
+    }
+
+    @Test
+    void executionTimeoutIsFailedAndDoesNotScheduleDownstreamNodes() throws Exception {
+        UUID workflowId = createBlockingWorkflow(true);
+        UUID executionId = startExecution(workflowId, "{\"triggerInput\":{},\"timeoutSeconds\":1}");
+
+        try {
+            assertThat(executorStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            Thread.sleep(1100);
+        } finally {
+            allowExecutorToFinish.countDown();
+        }
+
+        awaitStatus(executionId, ExecutionStatus.FAILED);
+        assertThat(executionRepository.findById(executionId).orElseThrow().getErrorCode())
+                .isEqualTo("EXECUTION_TIMEOUT");
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "blocking")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.FAILED);
+        assertThat(nodeExecutionRepository.findByExecution_IdAndWorkflowNodeId(executionId, "after")
+                .orElseThrow().getStatus()).isEqualTo(NodeExecutionStatus.SKIPPED);
+    }
+
+    private UUID createBlockingWorkflow(boolean includeDownstream) throws Exception {
+        String nodes = """
+                {"id":"trigger","type":"manual-trigger","configuration":{}},
+                {"id":"blocking","type":"test-blocking","configuration":{}}
+                """ + (includeDownstream
+                ? ",{\"id\":\"after\",\"type\":\"log-message\",\"configuration\":{\"message\":\"must not run\"}}"
+                : "");
+        String connections = """
+                {"id":"edge-1","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"blocking","targetHandle":"input"}
+                """ + (includeDownstream
+                ? ",{\"id\":\"edge-2\",\"sourceNodeId\":\"blocking\",\"sourceHandle\":\"output\",\"targetNodeId\":\"after\",\"targetHandle\":\"input\"}"
+                : "");
+        String definition = "{\"nodes\":[" + nodes + "],\"connections\":[" + connections + "]}";
+        String workflowResponse = mockMvc.perform(post("/api/workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.createObjectNode()
+                                .put("name", "Reliability Test")
+                                .put("description", "Cancellation and timeout fixture")
+                                .put("active", true)
+                                .set("definition", objectMapper.readTree(definition))
+                                .toString()))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(objectMapper.readTree(workflowResponse).path("id").asText());
+    }
+
+    private UUID startExecution(UUID workflowId, String requestBody) throws Exception {
+        String response = mockMvc.perform(post("/api/workflows/{id}/executions", workflowId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(objectMapper.readTree(response).path("id").asText());
+    }
+
+    private int cancelStatus(UUID executionId) throws Exception {
+        return mockMvc.perform(post("/api/executions/{id}/cancel", executionId))
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andReturn().getResponse().getStatus();
+    }
+
+    private void awaitStatus(UUID executionId, ExecutionStatus expectedStatus) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7);
+        ExecutionStatus status = ExecutionStatus.QUEUED;
+        while (System.nanoTime() < deadline) {
+            status = executionRepository.findById(executionId).orElseThrow().getStatus();
+            if (status == expectedStatus) return;
+            Thread.sleep(15);
+        }
+        assertThat(status).isEqualTo(expectedStatus);
     }
 
     @TestConfiguration

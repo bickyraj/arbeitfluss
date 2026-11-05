@@ -35,6 +35,40 @@ describe('ExecutionDetailsComponent branch monitoring', () => {
           durationMs: 0,
           errorMessage: null,
           createdAt: '2026-11-05T00:00:00Z'
+        },
+        {
+          id: 'node-http',
+          executionId: 'execution-1',
+          workflowNodeId: 'request',
+          nodeType: 'http-request',
+          status: 'SUCCEEDED',
+          inputData: null,
+          outputData: { body: 'x'.repeat(31_000) },
+          startedAt: null,
+          completedAt: null,
+          durationMs: 1,
+          errorMessage: null,
+          createdAt: '2026-11-05T00:00:00Z'
+        },
+        {
+          id: 'node-http-error',
+          executionId: 'execution-1',
+          workflowNodeId: 'failed-request',
+          nodeType: 'http-request',
+          status: 'FAILED',
+          inputData: null,
+          outputData: {
+            statusCode: 503,
+            responseFormat: 'Text',
+            headers: { 'content-type': 'text/plain' },
+            body: 'temporarily unavailable',
+            success: false
+          },
+          startedAt: null,
+          completedAt: null,
+          durationMs: 125,
+          errorMessage: 'HTTP request returned status 503.',
+          createdAt: '2026-11-05T00:00:00Z'
         }
       ])),
       getExecutionLogs: vi.fn(() => of([
@@ -73,9 +107,108 @@ describe('ExecutionDetailsComponent branch monitoring', () => {
     expect(root.textContent).toContain('SKIPPED · branch not selected');
     expect(root.textContent).toContain('selectedBranch');
     expect(root.textContent).toContain('TRUE');
+    expect(root.textContent).toContain('Output preview is limited to 30,000 characters.');
+    expect(root.textContent).toContain('HTTP status: 503');
+    expect(root.textContent).toContain('Response format: Text');
+    expect(root.textContent).toContain('Node duration: 125 ms');
+    expect(root.textContent).toContain('HTTP request returned status 503.');
     const skippedBadge = Array.from(root.querySelectorAll('span'))
       .find((span) => span.textContent?.includes('SKIPPED')) as HTMLElement;
     expect(skippedBadge.classList.contains('bg-slate-100')).toBe(true);
     expect(skippedBadge.classList.contains('text-rose-700')).toBe(false);
+  });
+});
+
+describe('ExecutionDetailsComponent reliability actions', () => {
+  it('requests cooperative cancellation for an active run', async () => {
+    const active = {
+      id: 'active-1',
+      workflowId: 'workflow-1',
+      workflowName: 'Active workflow',
+      triggerType: 'MANUAL',
+      status: 'RUNNING' as const,
+      startedAt: '2026-11-05T00:00:00Z',
+      completedAt: null,
+      durationMs: null,
+      errorMessage: null,
+      errorCode: null,
+      timeoutSeconds: 300,
+      retryOfExecutionId: null,
+      createdAt: '2026-11-05T00:00:00Z'
+    };
+    const api = {
+      getExecution: vi.fn(() => of(active)),
+      getNodeExecutions: vi.fn(() => of([])),
+      getExecutionLogs: vi.fn(() => of([])),
+      cancelExecution: vi.fn(() => of({ ...active, status: 'CANCELLING' as const })),
+      retryExecution: vi.fn()
+    };
+    await TestBed.configureTestingModule({
+      imports: [ExecutionDetailsComponent],
+      providers: [{ provide: ExecutionApiService, useValue: api }]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(ExecutionDetailsComponent);
+    fixture.componentRef.setInput('executionId', 'active-1');
+    fixture.detectChanges();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    fixture.detectChanges();
+
+    const cancelButton = Array.from(fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>)
+      .find((button) => button.textContent?.includes('Cancel'));
+    expect(cancelButton).toBeTruthy();
+    cancelButton?.click();
+    expect(api.cancelExecution).toHaveBeenCalledWith('active-1');
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('CANCELLING');
+    fixture.destroy();
+  });
+
+  it('creates a new retry execution only for a failed run and emits its ID', async () => {
+    const api = {
+      getExecution: vi.fn(() => of({
+        id: 'failed-1',
+        workflowId: 'workflow-1',
+        workflowName: 'Failed workflow',
+        triggerType: 'MANUAL',
+        status: 'FAILED' as const,
+        startedAt: '2026-11-05T00:00:00Z',
+        completedAt: '2026-11-05T00:00:01Z',
+        durationMs: 1000,
+        errorMessage: 'Node failed',
+        errorCode: 'EXECUTION_FAILED',
+        timeoutSeconds: 300,
+        retryOfExecutionId: null,
+        createdAt: '2026-11-05T00:00:00Z'
+      })),
+      getNodeExecutions: vi.fn(() => of([])),
+      getExecutionLogs: vi.fn(() => of([])),
+      cancelExecution: vi.fn(),
+      retryExecution: vi.fn(() => of({
+        id: 'retry-1',
+        status: 'QUEUED' as const,
+        createdAt: '2026-11-05T00:00:02Z'
+      }))
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [ExecutionDetailsComponent],
+      providers: [{ provide: ExecutionApiService, useValue: api }]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(ExecutionDetailsComponent);
+    fixture.componentRef.setInput('executionId', 'failed-1');
+    const retriedIds: string[] = [];
+    fixture.componentInstance.retryStarted.subscribe((id) => retriedIds.push(id));
+    fixture.detectChanges();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    fixture.detectChanges();
+
+    const buttons = fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>;
+    const retryButton = Array.from(buttons)
+      .find((button) => button.textContent?.includes('Retry')) as HTMLButtonElement;
+    expect(retryButton).toBeTruthy();
+    retryButton.click();
+    expect(api.retryExecution).toHaveBeenCalledWith('failed-1');
+    expect(retriedIds).toEqual(['retry-1']);
+    fixture.destroy();
   });
 });

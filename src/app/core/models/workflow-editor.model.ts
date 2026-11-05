@@ -16,7 +16,11 @@ export type WorkflowNodeType =
 export type WorkflowNodeCategory = 'Triggers' | 'Actions' | 'Logic' | 'Data';
 
 export type WorkflowScalarValue = string | number | boolean | null;
-export type WorkflowNodeConfiguration = Record<string, WorkflowScalarValue | undefined>;
+export type WorkflowConfigurationValue =
+  | WorkflowScalarValue
+  | WorkflowConfigurationValue[]
+  | { [key: string]: WorkflowConfigurationValue | undefined };
+export type WorkflowNodeConfiguration = Record<string, WorkflowConfigurationValue | undefined>;
 
 export type ConditionalOperator =
   | 'equals'

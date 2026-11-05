@@ -35,6 +35,7 @@ import type {
   WorkflowEditorState,
   WorkflowNode,
   WorkflowNodeConfiguration,
+  WorkflowConfigurationValue,
   WorkflowScalarValue,
   WorkflowNodeType
 } from '../../../core/models/workflow-editor.model';
@@ -75,7 +76,17 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
     'http-request': {
       name: 'HTTP Request',
       description: 'Calls an external API endpoint.',
-      config: { method: 'POST', url: 'https://api.example.com/v1/endpoint', headers: '{}', query: '', body: '{}' }
+      config: {
+        method: 'GET',
+        url: 'https://api.example.com/v1/endpoint',
+        responseFormat: 'auto',
+        timeoutSeconds: 30,
+        followRedirects: false,
+        queryParameters: [],
+        headers: [],
+        bodyType: 'none',
+        body: {}
+      }
     },
     'send-email': {
       name: 'Send Email',
@@ -165,6 +176,13 @@ const CONDITION_OPERATORS: ConditionalOperator[] = [
   'is empty',
   'is not empty'
 ];
+
+interface HttpKeyValueEntry {
+  [key: string]: WorkflowConfigurationValue | undefined;
+  name: string;
+  value: string;
+  enabled: boolean;
+}
 
 @Component({
   selector: 'app-workflow-editor',
@@ -439,11 +457,75 @@ const CONDITION_OPERATORS: ConditionalOperator[] = [
                   </div>
                 }
                 @case ('http-request') {
-                  <div class="space-y-3">
-                    <label class="block text-sm font-medium text-slate-700">Method<select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'method')" (change)="updateSelectedNodeConfig('method', $event)"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select></label>
-                    <label class="block text-sm font-medium text-slate-700">URL<input type="text" [value]="readConfig(node, 'url')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('url', $event)" /></label>
-                    <label class="block text-sm font-medium text-slate-700">Headers<textarea rows="3" [value]="readConfig(node, 'headers')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('headers', $event)"></textarea></label>
-                    <label class="block text-sm font-medium text-slate-700">Body<textarea rows="3" [value]="readConfig(node, 'body')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('body', $event)"></textarea></label>
+                  <div class="space-y-4">
+                    <label class="block text-sm font-medium text-slate-700">Method
+                      <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'method')" (change)="updateHttpSetting('method', $event)">
+                        <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+                      </select>
+                    </label>
+                    <label class="block text-sm font-medium text-slate-700">URL
+                      <input type="url" [value]="readConfig(node, 'url')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" placeholder="https://api.example.com/resource" (input)="updateHttpSetting('url', $event)" />
+                    </label>
+                    @if (httpUrlError(node)) { <p role="alert" class="text-xs text-rose-700">{{ httpUrlError(node) }}</p> }
+
+                    <div class="grid grid-cols-2 gap-3">
+                      <label class="block text-sm font-medium text-slate-700">Response format
+                        <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'responseFormat')" (change)="updateHttpSetting('responseFormat', $event)">
+                          <option value="auto">Auto</option><option value="json">JSON</option><option value="text">Text</option>
+                        </select>
+                      </label>
+                      <label class="block text-sm font-medium text-slate-700">Timeout (seconds)
+                        <input type="number" min="1" max="3600" step="1" [value]="readConfig(node, 'timeoutSeconds')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateHttpSetting('timeoutSeconds', $event)" />
+                      </label>
+                    </div>
+                    @if (httpTimeoutError(node)) { <p role="alert" class="text-xs text-rose-700">{{ httpTimeoutError(node) }}</p> }
+                    <label class="flex items-center gap-2 text-sm text-slate-700">
+                      <input type="checkbox" [checked]="node.configuration['followRedirects'] === true" (change)="updateHttpSetting('followRedirects', $event)" />
+                      Follow redirects (each destination is validated)
+                    </label>
+
+                    <section class="space-y-2 border-t border-slate-100 pt-3">
+                      <div class="flex items-center justify-between">
+                        <h4 class="text-sm font-semibold text-slate-800">Query parameters</h4>
+                        <button type="button" class="text-xs font-medium text-indigo-600 hover:text-indigo-800" (click)="addHttpEntry('queryParameters')">Add parameter</button>
+                      </div>
+                      @for (parameter of httpEntries(node, 'queryParameters'); track $index; let index = $index) {
+                        <div class="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-2">
+                          <input aria-label="Query parameter name" [value]="parameter.name" placeholder="Name" class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs" (input)="updateHttpEntry('queryParameters', index, 'name', $event)" />
+                          <input aria-label="Query parameter value" [value]="parameter.value" placeholder="Value" class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs" (input)="updateHttpEntry('queryParameters', index, 'value', $event)" />
+                          <input type="checkbox" aria-label="Enable query parameter" [checked]="parameter.enabled" (change)="toggleHttpEntry('queryParameters', index, $event)" />
+                          <button type="button" aria-label="Remove query parameter" class="px-1 text-rose-600" (click)="removeHttpEntry('queryParameters', index)">×</button>
+                        </div>
+                      }
+                    </section>
+
+                    <section class="space-y-2 border-t border-slate-100 pt-3">
+                      <div class="flex items-center justify-between">
+                        <h4 class="text-sm font-semibold text-slate-800">Headers</h4>
+                        <button type="button" class="text-xs font-medium text-indigo-600 hover:text-indigo-800" (click)="addHttpEntry('headers')">Add header</button>
+                      </div>
+                      @for (header of httpEntries(node, 'headers'); track $index; let index = $index) {
+                        <div class="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-2">
+                          <input aria-label="Header name" [value]="header.name" placeholder="Name" class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs" (input)="updateHttpEntry('headers', index, 'name', $event)" />
+                          <input aria-label="Header value" [value]="header.value" placeholder="Value" class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs" (input)="updateHttpEntry('headers', index, 'value', $event)" />
+                          <input type="checkbox" aria-label="Enable header" [checked]="header.enabled" (change)="toggleHttpEntry('headers', index, $event)" />
+                          <button type="button" aria-label="Remove header" class="px-1 text-rose-600" (click)="removeHttpEntry('headers', index)">×</button>
+                        </div>
+                      }
+                      <p class="text-xs leading-5 text-amber-700">Header values are stored with this workflow. Avoid entering long-lived credentials; a credentials manager is not available yet.</p>
+                    </section>
+
+                    <label class="block text-sm font-medium text-slate-700">Request body
+                      <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'bodyType') || 'none'" (change)="updateHttpSetting('bodyType', $event)">
+                        <option value="none">None</option><option value="json">JSON</option>
+                      </select>
+                    </label>
+                    @if (readConfig(node, 'bodyType') === 'json') {
+                      <label class="block text-sm font-medium text-slate-700">JSON body
+                        <textarea rows="7" spellcheck="false" [value]="httpBodyText(node)" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2.5 font-mono text-xs text-slate-100 outline-none focus:border-indigo-400" (input)="updateHttpBody($event)"></textarea>
+                      </label>
+                      @if (httpBodyError()) { <p role="alert" class="text-xs text-rose-700">{{ httpBodyError() }}</p> }
+                    }
                   </div>
                 }
                 @case ('send-email') {
@@ -570,13 +652,32 @@ const CONDITION_OPERATORS: ConditionalOperator[] = [
               }
             </div>
 
+            <div class="mt-4 max-w-xs">
+              <label for="execution-timeout" class="block text-sm font-medium text-slate-700">Execution timeout (seconds)</label>
+              <input
+                id="execution-timeout"
+                type="number"
+                min="1"
+                max="3600"
+                step="1"
+                [value]="executionTimeoutSeconds()"
+                [disabled]="isStartingExecution() || startedExecutionId() !== null"
+                class="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 disabled:opacity-70"
+                (input)="updateExecutionTimeout($event)"
+              />
+              <p class="mt-1 text-xs text-slate-500">Allowed range: 1–3600 seconds. Default: 300.</p>
+              @if (executionTimeoutError()) {
+                <p role="alert" class="mt-1 text-sm text-rose-700">{{ executionTimeoutError() }}</p>
+              }
+            </div>
+
             @if (!workflowId() || state().isDirty) {
               <p role="status" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                 {{ !workflowId() ? 'Save this workflow before running it.' : 'Save your changes before running. Execution uses the saved workflow graph.' }}
               </p>
             }
             <p class="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
-              Currently executable node types are Manual Trigger, Set Data, and Log Message. Other node types, including HTTP Request and IF Condition, are not executable yet.
+              Executable node types include Manual Trigger, Set Data, Log Message, IF / ELSE, and HTTP Request.
             </p>
 
             @if (executionStartError()) {
@@ -593,7 +694,7 @@ const CONDITION_OPERATORS: ConditionalOperator[] = [
                     class="rounded-xl border border-indigo-200 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
                   >Open execution details</a>
                 </div>
-                <app-execution-details [executionId]="executionId" />
+                <app-execution-details [executionId]="executionId" (retryStarted)="onExecutionRetryStarted($event)" />
               </div>
             } @else {
               <div class="mt-5 flex flex-wrap justify-end gap-3">
@@ -601,7 +702,7 @@ const CONDITION_OPERATORS: ConditionalOperator[] = [
                 <button
                   type="button"
                   class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-                  [disabled]="isStartingExecution() || !!executionInputError() || !workflowId() || state().isDirty || isLoading()"
+                  [disabled]="isStartingExecution() || !!executionInputError() || !!executionTimeoutError() || !workflowId() || state().isDirty || isLoading()"
                   (click)="startWorkflowExecution()"
                 >{{ isStartingExecution() ? 'Starting…' : 'Execute workflow' }}</button>
               </div>
@@ -627,9 +728,11 @@ export class WorkflowEditorComponent {
   protected readonly workflowId = signal<string | null>(null);
   protected readonly executionDialogOpen = signal(false);
   protected readonly executionInput = signal('{\n  "user": "Alex",\n  "message": "Hello FlowForge"\n}');
+  protected readonly executionTimeoutSeconds = signal('300');
   protected readonly isStartingExecution = signal(false);
   protected readonly executionStartError = signal<string | null>(null);
   protected readonly startedExecutionId = signal<string | null>(null);
+  protected readonly httpBodyError = signal<string | null>(null);
   protected readonly executionInputError = computed(() => {
     try {
       JSON.parse(this.executionInput());
@@ -637,6 +740,12 @@ export class WorkflowEditorComponent {
     } catch {
       return 'Enter valid JSON before starting the workflow.';
     }
+  });
+  protected readonly executionTimeoutError = computed(() => {
+    const seconds = Number(this.executionTimeoutSeconds());
+    return Number.isInteger(seconds) && seconds >= 1 && seconds <= 3600
+      ? null
+      : 'Execution timeout must be a whole number between 1 and 3600 seconds.';
   });
 
   constructor() {
@@ -810,12 +919,143 @@ export class WorkflowEditorComponent {
     return configValue === undefined ? '' : String(configValue);
   }
 
-  protected configEntries(node: WorkflowNode): Array<[string, WorkflowScalarValue | undefined]> {
-    return Object.entries(node.configuration) as Array<[string, WorkflowScalarValue | undefined]>;
+  protected configEntries(node: WorkflowNode): Array<[string, WorkflowConfigurationValue | undefined]> {
+    return Object.entries(node.configuration);
   }
 
-  protected configValueText(value: WorkflowScalarValue | undefined): string {
-    return String(value ?? '');
+  protected configValueText(value: WorkflowConfigurationValue | undefined): string {
+    return value !== null && typeof value === 'object'
+      ? JSON.stringify(value)
+      : String(value ?? '');
+  }
+
+  protected httpEntries(node: WorkflowNode, key: 'queryParameters' | 'headers'): HttpKeyValueEntry[] {
+    const raw = node.configuration[key];
+    if (Array.isArray(raw)) {
+      return raw.map((entry) => {
+        const record = this.asRecord(entry);
+        return {
+          name: typeof record['name'] === 'string' ? record['name'] : '',
+          value: typeof record['value'] === 'string' ? record['value'] : '',
+          enabled: typeof record['enabled'] === 'boolean' ? record['enabled'] : true
+        };
+      });
+    }
+    if (key === 'headers' && typeof raw === 'string') {
+      try {
+        const legacyHeaders: unknown = JSON.parse(raw);
+        if (legacyHeaders && typeof legacyHeaders === 'object' && !Array.isArray(legacyHeaders)) {
+          return Object.entries(legacyHeaders).map(([name, value]) => ({
+            name,
+            value: typeof value === 'string' ? value : String(value),
+            enabled: true
+          }));
+        }
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
+
+  protected addHttpEntry(key: 'queryParameters' | 'headers'): void {
+    const node = this.selectedNode();
+    if (!node) return;
+    this.setSelectedConfigValue(key, [...this.httpEntries(node, key), {
+      name: '',
+      value: '',
+      enabled: true
+    }]);
+  }
+
+  protected removeHttpEntry(key: 'queryParameters' | 'headers', index: number): void {
+    const node = this.selectedNode();
+    if (!node) return;
+    this.setSelectedConfigValue(key, this.httpEntries(node, key).filter((_, entryIndex) => entryIndex !== index));
+  }
+
+  protected updateHttpEntry(
+    key: 'queryParameters' | 'headers',
+    index: number,
+    field: 'name' | 'value',
+    event: Event
+  ): void {
+    const value = (event.target as HTMLInputElement | null)?.value ?? '';
+    const node = this.selectedNode();
+    if (!node) return;
+    const entries = this.httpEntries(node, key);
+    entries[index] = { ...entries[index], [field]: value };
+    this.setSelectedConfigValue(key, entries);
+  }
+
+  protected toggleHttpEntry(key: 'queryParameters' | 'headers', index: number, event: Event): void {
+    const checked = (event.target as HTMLInputElement | null)?.checked ?? false;
+    const node = this.selectedNode();
+    if (!node) return;
+    const entries = this.httpEntries(node, key);
+    entries[index] = { ...entries[index], enabled: checked };
+    this.setSelectedConfigValue(key, entries);
+  }
+
+  protected updateHttpSetting(key: string, event: Event): void {
+    const target = event.target as HTMLInputElement | HTMLSelectElement | null;
+    if (!target) return;
+    let value: WorkflowConfigurationValue = target.value;
+    if (key === 'followRedirects' && target instanceof HTMLInputElement) {
+      value = target.checked;
+    } else if (key === 'timeoutSeconds') {
+      const number = Number(target.value);
+      value = target.value !== '' && Number.isFinite(number) ? number : target.value;
+    }
+    this.setSelectedConfigValue(key, value);
+  }
+
+  protected httpUrlError(node: WorkflowNode): string | null {
+    const value = this.readConfig(node, 'url').trim();
+    if (!value) return 'Enter an HTTP or HTTPS URL.';
+    try {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+        return 'Use an HTTP or HTTPS URL without embedded credentials.';
+      }
+      return null;
+    } catch {
+      return 'Enter a valid HTTP or HTTPS URL.';
+    }
+  }
+
+  protected httpTimeoutError(node: WorkflowNode): string | null {
+    const timeout = Number(node.configuration['timeoutSeconds'] ?? 30);
+    return Number.isInteger(timeout) && timeout >= 1 && timeout <= 3600
+      ? null
+      : 'Request timeout must be a whole number between 1 and 3600 seconds.';
+  }
+
+  protected httpBodyText(node: WorkflowNode): string {
+    const body = node.configuration['body'];
+    if (typeof body === 'string') return body;
+    return JSON.stringify(body ?? {}, null, 2);
+  }
+
+  protected updateHttpBody(event: Event): void {
+    const text = (event.target as HTMLTextAreaElement | null)?.value ?? '';
+    try {
+      const body: unknown = JSON.parse(text);
+      if (body !== null && typeof body !== 'object') {
+        this.httpBodyError.set('JSON body must be an object, array, or null.');
+        return;
+      }
+      this.httpBodyError.set(null);
+      this.setSelectedConfigValue('body', body as WorkflowConfigurationValue);
+    } catch {
+      this.httpBodyError.set('Enter valid JSON for the request body.');
+    }
+  }
+
+  private asRecord(value: WorkflowConfigurationValue): Record<string, WorkflowConfigurationValue | undefined> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, WorkflowConfigurationValue | undefined>
+      : {};
   }
 
   protected conditionValueType(node: WorkflowNode): 'string' | 'number' | 'boolean' | 'null' {
@@ -866,7 +1106,7 @@ export class WorkflowEditorComponent {
     this.setSelectedConfigValue('value', value);
   }
 
-  private setSelectedConfigValue(key: string, value: WorkflowScalarValue): void {
+  private setSelectedConfigValue(key: string, value: WorkflowConfigurationValue): void {
     const selectedId = this.selectedNodeId();
     if (!selectedId) return;
     this.pushState({
@@ -1157,9 +1397,9 @@ export class WorkflowEditorComponent {
   }
 
   protected saveState(): void {
-    const conditionError = this.conditionalConfigurationError();
-    if (conditionError) {
-      this.saveError.set(conditionError);
+    const configurationError = this.workflowConfigurationError();
+    if (configurationError) {
+      this.saveError.set(configurationError);
       this.saveMessage.set(null);
       return;
     }
@@ -1237,13 +1477,22 @@ export class WorkflowEditorComponent {
     this.executionStartError.set(null);
   }
 
+  protected updateExecutionTimeout(event: Event): void {
+    const target = event.target as HTMLInputElement | null;
+    this.executionTimeoutSeconds.set(target?.value ?? '');
+  }
+
+  protected onExecutionRetryStarted(executionId: string): void {
+    this.startedExecutionId.set(executionId);
+  }
+
   protected startWorkflowExecution(): void {
-    if (this.isStartingExecution() || this.executionInputError()) {
+    if (this.isStartingExecution() || this.executionInputError() || this.executionTimeoutError()) {
       return;
     }
-    const conditionError = this.conditionalConfigurationError();
-    if (conditionError) {
-      this.executionStartError.set(conditionError);
+    const configurationError = this.workflowConfigurationError();
+    if (configurationError) {
+      this.executionStartError.set(configurationError);
       return;
     }
     const workflowId = this.workflowId();
@@ -1264,7 +1513,7 @@ export class WorkflowEditorComponent {
 
     this.isStartingExecution.set(true);
     this.executionStartError.set(null);
-    this.executionApi.startExecution(workflowId, triggerInput).subscribe({
+    this.executionApi.startExecution(workflowId, triggerInput, Number(this.executionTimeoutSeconds())).subscribe({
       next: (execution) => {
         this.isStartingExecution.set(false);
         this.startedExecutionId.set(execution.id);
@@ -1302,6 +1551,44 @@ export class WorkflowEditorComponent {
       }
     }
     return null;
+  }
+
+  private workflowConfigurationError(): string | null {
+    const conditionError = this.conditionalConfigurationError();
+    if (conditionError) return conditionError;
+    for (const node of this.state().nodes) {
+      if (node.type !== 'http-request') continue;
+      if (this.httpUrlError(node)) return `HTTP Request node "${node.name}" requires a valid HTTP or HTTPS URL.`;
+      if (this.httpTimeoutError(node)) return `HTTP Request node "${node.name}" requires a timeout between 1 and 3600 seconds.`;
+      const method = (this.readConfig(node, 'method') || 'GET').toUpperCase();
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        return `HTTP Request node "${node.name}" has an unsupported method.`;
+      }
+      if (!['auto', 'json', 'text'].includes((this.readConfig(node, 'responseFormat') || 'auto').toLowerCase())) {
+        return `HTTP Request node "${node.name}" has an unsupported response format.`;
+      }
+      if (!['none', 'json'].includes((this.readConfig(node, 'bodyType') || 'none').toLowerCase())) {
+        return `HTTP Request node "${node.name}" has an unsupported request body type.`;
+      }
+      if (this.readConfig(node, 'bodyType') === 'json'
+          && !['POST', 'PUT', 'PATCH'].includes(method)) {
+        return `HTTP Request node "${node.name}" supports JSON bodies only for POST, PUT, and PATCH.`;
+      }
+      for (const [label, key] of [
+        ['query parameter', 'queryParameters'],
+        ['header', 'headers']
+      ] as const) {
+        const entry = this.httpEntries(node, key).find((item) =>
+          !item.name.trim()
+          || (key === 'headers' && (
+            !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(item.name)
+            || ['host', 'content-length', 'transfer-encoding', 'connection'].includes(item.name.toLowerCase())
+          ))
+        );
+        if (entry) return `HTTP Request node "${node.name}" has an invalid ${label} name.`;
+      }
+    }
+    return this.httpBodyError();
   }
 
   protected undo(): void {

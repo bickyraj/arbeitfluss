@@ -19,6 +19,10 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +32,6 @@ import java.util.UUID;
 @Component
 public class WorkflowExecutionRuntime {
     private static final Logger LOGGER = LoggerFactory.getLogger(WorkflowExecutionRuntime.class);
-    private static final Duration EXECUTION_TIMEOUT = Duration.ofMinutes(5);
 
     private final ExecutionStateService stateService;
     private final WorkflowGraphValidator graphValidator;
@@ -57,16 +60,21 @@ public class WorkflowExecutionRuntime {
         try {
             graph = graphValidator.validate(snapshot.definition());
         } catch (InvalidExecutionRequestException exception) {
-            stateService.failExecution(executionId, exception.getMessage());
+            stateService.failExecution(executionId, exception.getMessage(), "INVALID_WORKFLOW");
             return;
         }
 
         Map<String, JsonNode> outputs = new LinkedHashMap<>();
         Map<String, Map<String, JsonNode>> branchOutputs = new LinkedHashMap<>();
         Map<String, Boolean> activeEdges = new LinkedHashMap<>();
-        Instant deadline = Instant.now().plus(EXECUTION_TIMEOUT);
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(snapshot.timeoutSeconds()));
 
         for (int index = 0; index < graph.executionOrder().size(); index++) {
+            if (stateService.isCancellationRequested(executionId)) {
+                skipRemaining(executionId, graph, index);
+                stateService.cancelExecution(executionId);
+                return;
+            }
             WorkflowGraphPlan.Node node = graph.executionOrder().get(index);
             List<WorkflowGraphPlan.Connection> incoming = graph.incomingConnections().getOrDefault(node.id(), List.of());
             if (incoming.stream().anyMatch(connection -> !activeEdges.containsKey(connection.id()))) {
@@ -83,11 +91,23 @@ public class WorkflowExecutionRuntime {
             }
             JsonNode input = inputFor(node, graph, snapshot, activeIncoming, outputs);
             if (Instant.now().isAfter(deadline)) {
-                failExecution(executionId, graph, index, "Workflow execution timed out.");
+                failExecution(
+                        executionId,
+                        graph,
+                        index,
+                        "Workflow execution timed out.",
+                        "EXECUTION_TIMEOUT"
+                );
                 return;
             }
 
-            UUID nodeExecutionId = stateService.beginNode(executionId, node.id(), input);
+            Optional<UUID> nodeExecution = stateService.beginNode(executionId, node.id(), input);
+            if (nodeExecution.isEmpty()) {
+                skipRemaining(executionId, graph, index);
+                stateService.cancelExecution(executionId);
+                return;
+            }
+            UUID nodeExecutionId = nodeExecution.get();
             Map<String, JsonNode> upstreamOutputs = upstreamOutputs(activeIncoming, branchOutputs, outputs);
             ExecutionContext context = new ExecutionContext(
                     executionId,
@@ -97,6 +117,7 @@ public class WorkflowExecutionRuntime {
                     node.configuration(),
                     upstreamOutputs,
                     deadline,
+                    () -> stateService.isCancellationRequested(executionId),
                     (level, message, details) -> stateService.appendLog(
                             executionId, nodeExecutionId, level, message, details
                     )
@@ -107,7 +128,8 @@ public class WorkflowExecutionRuntime {
                     throw new NodeExecutionException("Workflow execution timed out.");
                 }
                 NodeExecutor executor = executorRegistry.getRequired(node.type());
-                NodeExecutionResult result = executor.executeResult(
+                NodeExecutionResult result = executeWithinDeadline(
+                        executor,
                         input == null ? NullNode.getInstance() : input.deepCopy(),
                         context
                 );
@@ -115,23 +137,41 @@ public class WorkflowExecutionRuntime {
                     throw new NodeExecutionException("Workflow execution timed out.");
                 }
                 JsonNode safeOutput = result.output() == null ? NullNode.getInstance() : result.output();
-                activateOutgoing(node, graph, result.selectedOutputHandle(), activeEdges);
                 stateService.succeedNode(executionId, node.id(), input, safeOutput);
                 outputs.put(node.id(), safeOutput.deepCopy());
                 Map<String, JsonNode> currentBranch = branchContext(activeIncoming, branchOutputs, upstreamOutputs);
                 currentBranch.put(node.id(), safeOutput.deepCopy());
                 branchOutputs.put(node.id(), currentBranch);
+                if (stateService.isCancellationRequested(executionId)) {
+                    skipRemaining(executionId, graph, index + 1);
+                    stateService.cancelExecution(executionId);
+                    return;
+                }
+                activateOutgoing(node, graph, result.selectedOutputHandle(), activeEdges);
             } catch (Exception exception) {
                 String safeError = safeNodeError(node, exception);
-                stateService.failNode(executionId, node.id(), input, safeError);
+                JsonNode failureOutput = exception instanceof NodeExecutionException nodeException
+                        ? nodeException.failureOutput()
+                        : null;
+                stateService.failNode(executionId, node.id(), input, failureOutput, safeError);
+                String errorCode = exception instanceof NodeExecutionException nodeException
+                        ? nodeException.errorCode()
+                        : "EXECUTION_FAILED";
                 stateService.appendLog(
                         executionId,
                         nodeExecutionId,
                         ExecutionLogLevel.ERROR,
                         safeError,
-                        null
+                        JsonNodeFactory.instance.objectNode().put("errorCode", errorCode)
                 );
-                failExecution(executionId, graph, index + 1, safeError);
+                boolean timedOut = context.isExpired() || "Workflow execution timed out.".equals(exception.getMessage());
+                failExecution(
+                        executionId,
+                        graph,
+                        index + 1,
+                        safeError,
+                        timedOut ? "EXECUTION_TIMEOUT" : errorCode
+                );
                 return;
             }
         }
@@ -251,11 +291,27 @@ public class WorkflowExecutionRuntime {
             int firstSkippedIndex,
             String safeError
     ) {
+        failExecution(executionId, graph, firstSkippedIndex, safeError, "EXECUTION_FAILED");
+    }
+
+    private void failExecution(
+            UUID executionId,
+            WorkflowGraphPlan graph,
+            int firstSkippedIndex,
+            String safeError,
+            String errorCode
+    ) {
         for (int index = firstSkippedIndex; index < graph.executionOrder().size(); index++) {
             stateService.skipNode(executionId, graph.executionOrder().get(index).id());
         }
-        stateService.failExecution(executionId, safeError);
+        stateService.failExecution(executionId, safeError, errorCode);
         LOGGER.info("Workflow execution {} completed with failure", executionId);
+    }
+
+    private void skipRemaining(UUID executionId, WorkflowGraphPlan graph, int firstSkippedIndex) {
+        for (int index = firstSkippedIndex; index < graph.executionOrder().size(); index++) {
+            stateService.skipNode(executionId, graph.executionOrder().get(index).id());
+        }
     }
 
     private String safeNodeError(WorkflowGraphPlan.Node node, Exception exception) {
@@ -263,5 +319,59 @@ public class WorkflowExecutionRuntime {
             return "Node '" + node.name() + "' failed: " + exception.getMessage();
         }
         return "Node '" + node.name() + "' failed.";
+    }
+
+    private NodeExecutionResult executeWithinDeadline(
+            NodeExecutor executor,
+            JsonNode input,
+            ExecutionContext context
+    ) throws Exception {
+        FutureTask<NodeExecutionResult> task = new FutureTask<>(
+                () -> executor.executeResult(input, context)
+        );
+        Thread.ofVirtual()
+                .name("workflow-node-" + context.workflowNodeId())
+                .start(task);
+        long remainingNanos = Duration.between(Instant.now(), context.deadline()).toNanos();
+        if (remainingNanos <= 0) {
+            context.cancelActiveOperations();
+            task.cancel(true);
+            throw new NodeExecutionException("Workflow execution timed out.", "EXECUTION_TIMEOUT");
+        }
+        try {
+            while (true) {
+                if (executor.abortOnWorkflowCancellation() && context.isCancellationRequested()) {
+                    context.cancelActiveOperations();
+                    task.cancel(true);
+                    throw new NodeExecutionException("Execution cancellation requested.", "EXECUTION_CANCELLED");
+                }
+                long remaining = Duration.between(Instant.now(), context.deadline()).toNanos();
+                if (remaining <= 0) {
+                    context.cancelActiveOperations();
+                    task.cancel(true);
+                    throw new NodeExecutionException("Workflow execution timed out.", "EXECUTION_TIMEOUT");
+                }
+                try {
+                    return task.get(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
+                } catch (TimeoutException pollTimeout) {
+                    if (Instant.now().isAfter(context.deadline())) {
+                        context.cancelActiveOperations();
+                        task.cancel(true);
+                        throw new NodeExecutionException("Workflow execution timed out.", "EXECUTION_TIMEOUT");
+                    }
+                }
+            }
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof Exception nodeException) {
+                throw nodeException;
+            }
+            throw new NodeExecutionException("Node execution failed.");
+        } catch (InterruptedException exception) {
+            context.cancelActiveOperations();
+            task.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new NodeExecutionException("Execution worker was interrupted.");
+        }
     }
 }

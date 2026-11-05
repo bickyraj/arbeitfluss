@@ -16,7 +16,9 @@ import com.flowforge.entity.ExecutionLog;
 import com.flowforge.entity.NodeExecution;
 import com.flowforge.entity.Execution;
 import com.flowforge.exception.InvalidExecutionRequestException;
+import com.flowforge.exception.ExecutionConflictException;
 import com.flowforge.model.execution.ExecutionLogLevel;
+import com.flowforge.model.execution.ExecutionStatus;
 import com.flowforge.model.execution.ExecutionTriggerType;
 import com.flowforge.model.execution.WorkflowSnapshot;
 import com.flowforge.runtime.WorkflowGraphPlan;
@@ -52,6 +54,7 @@ public class ExecutionService {
     private final ExecutionDispatcher executionDispatcher;
     private final ExecutionDispatchFailureRecorder dispatchFailureRecorder;
     private final WorkflowGraphValidator graphValidator;
+    private final ExecutionStateService stateService;
 
     public ExecutionService(
             WorkflowRepository workflowRepository,
@@ -61,7 +64,8 @@ public class ExecutionService {
             ObjectMapper objectMapper,
             ExecutionDispatcher executionDispatcher,
             ExecutionDispatchFailureRecorder dispatchFailureRecorder,
-            WorkflowGraphValidator graphValidator
+            WorkflowGraphValidator graphValidator,
+            ExecutionStateService stateService
     ) {
         this.workflowRepository = workflowRepository;
         this.executionRepository = executionRepository;
@@ -71,6 +75,7 @@ public class ExecutionService {
         this.executionDispatcher = executionDispatcher;
         this.dispatchFailureRecorder = dispatchFailureRecorder;
         this.graphValidator = graphValidator;
+        this.stateService = stateService;
     }
 
     @Transactional
@@ -80,6 +85,10 @@ public class ExecutionService {
         JsonNode triggerInput = request == null || request.triggerInput() == null
                 ? objectMapper.createObjectNode()
                 : request.triggerInput().deepCopy();
+        int timeoutSeconds = request == null || request.timeoutSeconds() == null ? 300 : request.timeoutSeconds();
+        if (timeoutSeconds < 1 || timeoutSeconds > 3600) {
+            throw new InvalidExecutionRequestException("Execution timeout must be between 1 and 3600 seconds");
+        }
         validatePayloadSize(triggerInput, MAX_TRIGGER_INPUT_BYTES, "Trigger input");
 
         WorkflowSnapshot snapshot = new WorkflowSnapshot(workflow.getId(), workflow.getName(), workflow.getDefinition());
@@ -87,13 +96,47 @@ public class ExecutionService {
         validatePayloadSize(definition, MAX_DEFINITION_SNAPSHOT_BYTES, "Workflow definition");
         WorkflowGraphPlan graph = graphValidator.validate(definition);
 
-        Execution execution = executionRepository.saveAndFlush(new Execution(
+        Execution execution = new Execution(
                 workflow,
                 snapshot.workflowName(),
                 snapshot.definition(),
                 ExecutionTriggerType.MANUAL,
-                triggerInput
-        ));
+                triggerInput,
+                timeoutSeconds,
+                null
+        );
+        return persistAndDispatch(execution, graph);
+    }
+
+    @Transactional
+    public ExecutionStartResponse retryExecution(UUID executionId) {
+        Execution original = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Execution not found: " + executionId));
+        if (original.getStatus() != ExecutionStatus.FAILED) {
+            throw new ExecutionConflictException("Only failed executions can be retried.");
+        }
+        JsonNode definition = original.getWorkflowDefinition();
+        WorkflowGraphPlan graph = graphValidator.validate(definition);
+        Execution retry = new Execution(
+                original.getWorkflow(),
+                original.getWorkflowName(),
+                definition,
+                original.getTriggerType(),
+                original.getTriggerInput(),
+                original.getTimeoutSeconds(),
+                original
+        );
+        return persistAndDispatch(retry, graph);
+    }
+
+    @Transactional
+    public ExecutionResponse cancelExecution(UUID executionId) {
+        stateService.requestCancellation(executionId);
+        return getExecution(executionId);
+    }
+
+    private ExecutionStartResponse persistAndDispatch(Execution newExecution, WorkflowGraphPlan graph) {
+        Execution execution = executionRepository.saveAndFlush(newExecution);
 
         List<NodeExecution> nodeExecutions = graph.executionOrder().stream()
                 .map(node -> new NodeExecution(
@@ -105,8 +148,12 @@ public class ExecutionService {
         nodeExecutionRepository.saveAll(nodeExecutions);
 
         ObjectNode details = objectMapper.createObjectNode();
-        details.put("triggerType", ExecutionTriggerType.MANUAL.name());
+        details.put("triggerType", execution.getTriggerType().name());
         details.put("nodeCount", nodeExecutions.size());
+        details.put("timeoutSeconds", execution.getTimeoutSeconds());
+        if (execution.getRetryOfExecutionId() != null) {
+            details.put("retryOfExecutionId", execution.getRetryOfExecutionId().toString());
+        }
         executionLogRepository.save(new ExecutionLog(
                 execution,
                 null,
@@ -149,6 +196,17 @@ public class ExecutionService {
             throw new ResourceNotFoundException("Workflow not found: " + workflowId);
         }
         return executionRepository.findAllByWorkflow_IdOrderByCreatedAtDesc(workflowId, pageable)
+                .map(ExecutionResponse::fromEntity);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<ExecutionResponse> searchAllExecutions(
+            ExecutionStatus status,
+            String search,
+            Pageable pageable
+    ) {
+        String normalizedSearch = search == null || search.isBlank() ? null : search.trim();
+        return executionRepository.searchAll(status, normalizedSearch, pageable)
                 .map(ExecutionResponse::fromEntity);
     }
 

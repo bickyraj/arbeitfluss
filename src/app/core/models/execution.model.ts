@@ -1,4 +1,4 @@
-export type ExecutionStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+export type ExecutionStatus = 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type NodeExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
 export type ExecutionLogLevel = 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -19,6 +19,17 @@ export interface ExecutionResponse {
   durationMs: number | null;
   errorMessage: string | null;
   createdAt: string;
+  errorCode: string | null;
+  timeoutSeconds: number;
+  retryOfExecutionId: string | null;
+}
+
+export interface ExecutionPage {
+  content: ExecutionResponse[];
+  totalElements: number;
+  totalPages: number;
+  number: number;
+  size: number;
 }
 
 export interface NodeExecutionResponse {

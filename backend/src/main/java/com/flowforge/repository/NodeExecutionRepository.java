@@ -9,4 +9,5 @@ import java.util.UUID;
 public interface NodeExecutionRepository extends JpaRepository<NodeExecution, UUID> {
     List<NodeExecution> findAllByExecution_IdOrderByCreatedAtAscWorkflowNodeIdAsc(UUID executionId);
     java.util.Optional<NodeExecution> findByExecution_IdAndWorkflowNodeId(UUID executionId, String workflowNodeId);
+    List<NodeExecution> findAllByExecution_Id(UUID executionId);
 }

@@ -56,6 +56,16 @@ public class Execution {
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
+    @Column(name = "error_code", length = 64)
+    private String errorCode;
+
+    @Column(name = "timeout_seconds", nullable = false)
+    private int timeoutSeconds = 300;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "retry_of_execution_id")
+    private Execution retryOfExecution;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -64,11 +74,19 @@ public class Execution {
 
     public Execution(Workflow workflow, String workflowName, JsonNode workflowDefinition,
                              ExecutionTriggerType triggerType, JsonNode triggerInput) {
+        this(workflow, workflowName, workflowDefinition, triggerType, triggerInput, 300, null);
+    }
+
+    public Execution(Workflow workflow, String workflowName, JsonNode workflowDefinition,
+                     ExecutionTriggerType triggerType, JsonNode triggerInput, int timeoutSeconds,
+                     Execution retryOfExecution) {
         this.workflow = workflow;
         this.workflowName = workflowName;
         this.workflowDefinition = workflowDefinition.deepCopy();
         this.triggerType = triggerType;
         this.triggerInput = triggerInput.deepCopy();
+        this.timeoutSeconds = timeoutSeconds;
+        this.retryOfExecution = retryOfExecution;
         this.status = ExecutionStatus.QUEUED;
     }
 
@@ -78,13 +96,20 @@ public class Execution {
     }
 
     public void transitionTo(ExecutionStatus nextStatus, String error) {
+        transitionTo(nextStatus, error, null);
+    }
+
+    public void transitionTo(ExecutionStatus nextStatus, String error, String nextErrorCode) {
         boolean valid = switch (status) {
             case QUEUED -> nextStatus == ExecutionStatus.RUNNING
                     || nextStatus == ExecutionStatus.FAILED
                     || nextStatus == ExecutionStatus.CANCELLED;
-            case RUNNING -> nextStatus == ExecutionStatus.SUCCEEDED
+            case RUNNING -> nextStatus == ExecutionStatus.CANCELLING
+                    || nextStatus == ExecutionStatus.SUCCEEDED
                     || nextStatus == ExecutionStatus.FAILED
                     || nextStatus == ExecutionStatus.CANCELLED;
+            case CANCELLING -> nextStatus == ExecutionStatus.CANCELLED
+                    || nextStatus == ExecutionStatus.FAILED;
             case SUCCEEDED, FAILED, CANCELLED -> false;
         };
         if (!valid) {
@@ -98,12 +123,11 @@ public class Execution {
         if (nextStatus == ExecutionStatus.SUCCEEDED
                 || nextStatus == ExecutionStatus.FAILED
                 || nextStatus == ExecutionStatus.CANCELLED) {
-            if (startedAt == null) {
-                startedAt = createdAt;
-            }
+            if (startedAt == null && nextStatus != ExecutionStatus.CANCELLED) startedAt = createdAt;
             completedAt = now;
-            durationMs = Duration.between(startedAt, completedAt).toMillis();
+            durationMs = startedAt == null ? 0L : Duration.between(startedAt, completedAt).toMillis();
             errorMessage = error;
+            errorCode = nextErrorCode;
         }
         status = nextStatus;
     }
@@ -120,5 +144,8 @@ public class Execution {
     public Instant getCompletedAt() { return completedAt; }
     public Long getDurationMs() { return durationMs; }
     public String getErrorMessage() { return errorMessage; }
+    public String getErrorCode() { return errorCode; }
+    public int getTimeoutSeconds() { return timeoutSeconds; }
+    public UUID getRetryOfExecutionId() { return retryOfExecution == null ? null : retryOfExecution.getId(); }
     public Instant getCreatedAt() { return createdAt; }
 }

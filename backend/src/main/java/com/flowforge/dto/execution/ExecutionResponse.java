@@ -17,7 +17,10 @@ public record ExecutionResponse(
         Instant completedAt,
         Long durationMs,
         String errorMessage,
-        Instant createdAt
+        Instant createdAt,
+        String errorCode,
+        int timeoutSeconds,
+        UUID retryOfExecutionId
 ) {
     public static ExecutionResponse fromEntity(Execution execution) {
         return new ExecutionResponse(
@@ -30,7 +33,10 @@ public record ExecutionResponse(
                 execution.getCompletedAt(),
                 execution.getDurationMs(),
                 execution.getErrorMessage(),
-                execution.getCreatedAt()
+                execution.getCreatedAt(),
+                execution.getErrorCode(),
+                execution.getTimeoutSeconds(),
+                execution.getRetryOfExecutionId()
         );
     }
 }

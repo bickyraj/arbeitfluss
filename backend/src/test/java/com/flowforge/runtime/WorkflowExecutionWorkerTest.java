@@ -1,6 +1,7 @@
 package com.flowforge.runtime;
 
 import com.flowforge.service.ExecutionStateService;
+import com.flowforge.service.ExecutionRecoveryService;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
@@ -14,7 +15,8 @@ class WorkflowExecutionWorkerTest {
     void recordsAWorkerRuntimeFailureInsteadOfLeavingExecutionQueued() {
         WorkflowExecutionRuntime runtime = mock(WorkflowExecutionRuntime.class);
         ExecutionStateService stateService = mock(ExecutionStateService.class);
-        WorkflowExecutionWorker worker = new WorkflowExecutionWorker(runtime, stateService);
+        ExecutionRecoveryService recoveryService = mock(ExecutionRecoveryService.class);
+        WorkflowExecutionWorker worker = new WorkflowExecutionWorker(runtime, stateService, recoveryService);
         UUID executionId = UUID.randomUUID();
         doThrow(new IllegalStateException("internal failure"))
                 .when(runtime).execute(executionId);

@@ -1,4 +1,4 @@
-import { Component, inject, input, signal } from '@angular/core';
+import { Component, inject, input, output, signal } from '@angular/core';
 import { forkJoin, switchMap, takeWhile, tap, timer } from 'rxjs';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
@@ -27,8 +27,8 @@ import type {
             <p class="mt-1 break-all font-mono text-xs text-slate-500">{{ run.id }}</p>
           </div>
           <span class="rounded-full px-2.5 py-1 text-xs font-semibold"
-            [class.bg-amber-50]="run.status === 'QUEUED' || run.status === 'RUNNING'"
-            [class.text-amber-700]="run.status === 'QUEUED' || run.status === 'RUNNING'"
+            [class.bg-amber-50]="run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'CANCELLING'"
+            [class.text-amber-700]="run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'CANCELLING'"
             [class.bg-emerald-50]="run.status === 'SUCCEEDED'"
             [class.text-emerald-700]="run.status === 'SUCCEEDED'"
             [class.bg-rose-50]="run.status === 'FAILED'"
@@ -39,9 +39,35 @@ import type {
           </span>
         </header>
 
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+          <div class="text-sm text-slate-600">
+            Duration: <strong class="font-semibold text-slate-800">{{ duration(run) }}</strong>
+            <span class="ml-2 text-xs text-slate-500">Timeout: {{ run.timeoutSeconds }}s</span>
+          </div>
+          <div class="flex gap-2">
+            @if (run.status === 'QUEUED' || run.status === 'RUNNING') {
+              <button type="button" class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-white disabled:opacity-50" [disabled]="actionBusy()" (click)="cancel(run.id)">
+                {{ actionBusy() ? 'Working…' : 'Cancel' }}
+              </button>
+            }
+            @if (run.status === 'FAILED') {
+              <button type="button" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50" [disabled]="actionBusy()" (click)="retry(run.id)">
+                {{ actionBusy() ? 'Retrying…' : 'Retry' }}
+              </button>
+            }
+          </div>
+        </div>
+        @if (run.status === 'RUNNING' || run.status === 'CANCELLING') {
+          <p class="text-xs text-slate-500">Cancellation takes effect after the active node finishes. It cannot undo external side effects already performed.</p>
+        }
+        @if (actionError()) {
+          <div role="alert" class="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{{ actionError() }}</div>
+        }
+
         @if (run.errorMessage) {
           <div role="alert" class="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
             {{ run.errorMessage }}
+            @if (run.errorCode) { <span class="ml-1 font-mono text-xs">({{ run.errorCode }})</span> }
           </div>
         }
 
@@ -55,6 +81,9 @@ import type {
                     <div class="min-w-0">
                       <p class="break-all text-sm font-medium text-slate-900">{{ node.workflowNodeId }}</p>
                       <p class="text-xs text-slate-500">{{ node.nodeType }}</p>
+                      @if (node.durationMs !== null) {
+                        <p class="mt-1 text-xs text-slate-500">Node duration: {{ nodeDuration(node.durationMs) }}</p>
+                      }
                     </div>
                     <span class="rounded-full px-2 py-1 text-[11px] font-medium"
                       [class.bg-amber-50]="node.status === 'RUNNING'"
@@ -71,6 +100,12 @@ import type {
                   @if (node.errorMessage) {
                     <p class="mt-2 text-sm text-rose-700">{{ node.errorMessage }}</p>
                   }
+                  @if (node.nodeType === 'http-request' && httpResponse(node.outputData); as response) {
+                    <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                      <span>HTTP status: <strong>{{ response.statusCode }}</strong></span>
+                      <span>Response format: <strong>{{ response.format }}</strong></span>
+                    </div>
+                  }
                   <div class="mt-3 grid gap-3 sm:grid-cols-2">
                     <div>
                       <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">Input</p>
@@ -79,6 +114,9 @@ import type {
                     <div>
                       <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">Output</p>
                       <pre class="max-h-40 overflow-auto rounded-xl bg-slate-950 p-2 text-xs text-slate-100">{{ formatJson(node.outputData) }}</pre>
+                      @if (isOutputTruncated(node.outputData)) {
+                        <p class="mt-1 text-xs text-slate-500">Output preview is limited to 30,000 characters.</p>
+                      }
                     </div>
                   </div>
                 </article>
@@ -119,15 +157,23 @@ import type {
 })
 export class ExecutionDetailsComponent {
   readonly executionId = input.required<string>();
+  readonly retryStarted = output<string>();
 
   protected readonly execution = signal<ExecutionResponse | null>(null);
   protected readonly nodes = signal<NodeExecutionResponse[]>([]);
   protected readonly logs = signal<ExecutionLogResponse[]>([]);
   protected readonly errorMessage = signal<string | null>(null);
   protected readonly loading = signal(true);
+  protected readonly actionBusy = signal(false);
+  protected readonly actionError = signal<string | null>(null);
+  protected readonly now = signal(Date.now());
   private readonly api = inject(ExecutionApiService);
+  private readonly jsonPreviewCache = new WeakMap<object, { text: string; truncated: boolean }>();
 
   constructor() {
+    timer(0, 1000).pipe(takeUntilDestroyed()).subscribe(() => {
+      this.now.set(Date.now());
+    });
     toObservable(this.executionId).pipe(
       tap(() => {
         this.loading.set(true);
@@ -142,7 +188,9 @@ export class ExecutionDetailsComponent {
           nodes: this.api.getNodeExecutions(id),
           logs: this.api.getExecutionLogs(id)
         })),
-        takeWhile(({ execution }) => execution.status === 'QUEUED' || execution.status === 'RUNNING', true)
+        takeWhile(({ execution }) =>
+          execution.status === 'QUEUED' || execution.status === 'RUNNING' || execution.status === 'CANCELLING', true
+        )
       )),
       takeUntilDestroyed()
     ).subscribe({
@@ -160,10 +208,82 @@ export class ExecutionDetailsComponent {
   }
 
   protected formatJson(value: unknown): string {
-    return value == null ? '—' : JSON.stringify(value, null, 2);
+    if (value == null) return '—';
+    const preview = this.jsonPreview(value);
+    return preview.truncated ? `${preview.text}\n… output truncated` : preview.text;
+  }
+
+  protected isOutputTruncated(value: unknown): boolean {
+    return value != null && this.jsonPreview(value).truncated;
+  }
+
+  private jsonPreview(value: unknown): { text: string; truncated: boolean } {
+    if (typeof value === 'object' && value !== null) {
+      const cached = this.jsonPreviewCache.get(value);
+      if (cached) return cached;
+      const formatted = JSON.stringify(value, null, 2);
+      const preview = {
+        text: formatted.length > 30_000 ? formatted.slice(0, 30_000) : formatted,
+        truncated: formatted.length > 30_000
+      };
+      this.jsonPreviewCache.set(value, preview);
+      return preview;
+    }
+    const formatted = JSON.stringify(value, null, 2);
+    return {
+      text: formatted.length > 30_000 ? formatted.slice(0, 30_000) : formatted,
+      truncated: formatted.length > 30_000
+    };
+  }
+
+  protected httpResponse(value: unknown): { statusCode: number; format: string } | null {
+    if (!value || typeof value !== 'object' || !('statusCode' in value) || !('body' in value)) return null;
+    const response = value as { statusCode: unknown; body: unknown; responseFormat?: unknown };
+    if (typeof response.statusCode !== 'number') return null;
+    const format = response.responseFormat === 'JSON' || response.responseFormat === 'Text'
+      ? response.responseFormat
+      : typeof response.body === 'string' ? 'Text' : 'JSON';
+    return { statusCode: response.statusCode, format };
+  }
+
+  protected nodeDuration(milliseconds: number): string {
+    return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(2)} s`;
   }
 
   protected hasDetails(value: unknown): boolean {
     return value != null && typeof value === 'object' && Object.keys(value).length > 0;
+  }
+
+  protected duration(run: ExecutionResponse): string {
+    const elapsed = run.durationMs ?? (run.startedAt ? Math.max(0, this.now() - Date.parse(run.startedAt)) : null);
+    if (elapsed == null) return run.status === 'QUEUED' ? 'Queued' : '—';
+    const seconds = Math.floor(elapsed / 1000);
+    return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+  }
+
+  protected cancel(executionId: string): void {
+    this.actionBusy.set(true);
+    this.actionError.set(null);
+    this.api.cancelExecution(executionId).subscribe({
+      next: (run) => this.execution.set(run),
+      error: () => {
+        this.actionError.set('Unable to cancel this execution. Refresh and try again.');
+        this.actionBusy.set(false);
+      },
+      complete: () => this.actionBusy.set(false)
+    });
+  }
+
+  protected retry(executionId: string): void {
+    this.actionBusy.set(true);
+    this.actionError.set(null);
+    this.api.retryExecution(executionId).subscribe({
+      next: (run) => this.retryStarted.emit(run.id),
+      error: () => {
+        this.actionError.set('Unable to retry this execution. Refresh and try again.');
+        this.actionBusy.set(false);
+      },
+      complete: () => this.actionBusy.set(false)
+    });
   }
 }

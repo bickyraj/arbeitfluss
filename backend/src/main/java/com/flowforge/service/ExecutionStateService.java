@@ -40,7 +40,7 @@ public class ExecutionStateService {
 
     @Transactional
     public Optional<ExecutionRunSnapshot> beginExecution(UUID executionId) {
-        Execution execution = executionRepository.findById(executionId).orElse(null);
+        Execution execution = executionRepository.findByIdForUpdate(executionId).orElse(null);
         if (execution == null || execution.getStatus() != ExecutionStatus.QUEUED) {
             return Optional.empty();
         }
@@ -49,15 +49,21 @@ public class ExecutionStateService {
                 execution.getId(),
                 execution.getWorkflowId(),
                 execution.getWorkflowDefinition(),
-                execution.getTriggerInput()
+                execution.getTriggerInput(),
+                execution.getTimeoutSeconds()
         ));
     }
 
     @Transactional
-    public UUID beginNode(UUID executionId, String workflowNodeId, JsonNode input) {
+    public Optional<UUID> beginNode(UUID executionId, String workflowNodeId, JsonNode input) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Execution not found: " + executionId));
+        if (execution.getStatus() != ExecutionStatus.RUNNING) {
+            return Optional.empty();
+        }
         NodeExecution node = findNodeExecution(executionId, workflowNodeId);
         node.transitionTo(NodeExecutionStatus.RUNNING, input, null, null);
-        return node.getId();
+        return Optional.of(node.getId());
     }
 
     @Transactional
@@ -68,9 +74,20 @@ public class ExecutionStateService {
 
     @Transactional
     public void failNode(UUID executionId, String workflowNodeId, JsonNode input, String safeError) {
+        failNode(executionId, workflowNodeId, input, null, safeError);
+    }
+
+    @Transactional
+    public void failNode(
+            UUID executionId,
+            String workflowNodeId,
+            JsonNode input,
+            JsonNode output,
+            String safeError
+    ) {
         NodeExecution node = findNodeExecution(executionId, workflowNodeId);
         if (node.getStatus() == NodeExecutionStatus.RUNNING) {
-            node.transitionTo(NodeExecutionStatus.FAILED, input, null, safeError);
+            node.transitionTo(NodeExecutionStatus.FAILED, input, output, safeError);
         }
     }
 
@@ -84,26 +101,149 @@ public class ExecutionStateService {
 
     @Transactional
     public void succeedExecution(UUID executionId) {
-        Execution execution = findExecution(executionId);
+        Execution execution = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Execution not found: " + executionId));
         if (execution.getStatus() == ExecutionStatus.RUNNING) {
             execution.transitionTo(ExecutionStatus.SUCCEEDED, null);
+        } else if (execution.getStatus() == ExecutionStatus.CANCELLING) {
+            finishCancellation(execution);
         }
     }
 
     @Transactional
     public void failExecution(UUID executionId, String safeError) {
-        Execution execution = executionRepository.findById(executionId).orElse(null);
+        failExecution(executionId, safeError, "EXECUTION_FAILED");
+    }
+
+    @Transactional
+    public void failExecution(UUID executionId, String safeError, String errorCode) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId).orElse(null);
         if (execution != null && (execution.getStatus() == ExecutionStatus.RUNNING
-                || execution.getStatus() == ExecutionStatus.QUEUED)) {
-            execution.transitionTo(ExecutionStatus.FAILED, safeError);
+                || execution.getStatus() == ExecutionStatus.QUEUED
+                || execution.getStatus() == ExecutionStatus.CANCELLING)) {
+            reconcileNodesBeforeTerminal(executionId, safeError);
+            if (execution.getStatus() == ExecutionStatus.CANCELLING) {
+                finishCancellation(execution);
+                appendLifecycleLog(
+                        execution,
+                        ExecutionLogLevel.INFO,
+                        "Execution cancelled after the active node stopped.",
+                        "EXECUTION_CANCELLED"
+                );
+                return;
+            }
+            execution.transitionTo(ExecutionStatus.FAILED, safeError, errorCode);
             executionLogRepository.save(new ExecutionLog(
                     execution,
                     null,
                     ExecutionLogLevel.ERROR,
                     safeError,
-                    objectMapper.createObjectNode()
+                    detailsWithCode(errorCode)
             ));
         }
+    }
+
+    @Transactional
+    public ExecutionStatus requestCancellation(UUID executionId) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Execution not found: " + executionId));
+        switch (execution.getStatus()) {
+            case QUEUED -> {
+                execution.transitionTo(ExecutionStatus.CANCELLED, "Execution cancelled before it started.", "EXECUTION_CANCELLED");
+                skipPendingNodes(executionId);
+                appendLifecycleLog(execution, ExecutionLogLevel.INFO, "Execution cancelled before it started.", "EXECUTION_CANCELLED");
+            }
+            case RUNNING -> {
+                execution.transitionTo(ExecutionStatus.CANCELLING, null);
+                appendLifecycleLog(execution, ExecutionLogLevel.INFO, "Cancellation requested; the active node will finish before execution stops.", "EXECUTION_CANCELLING");
+            }
+            case CANCELLING -> { }
+            case SUCCEEDED, FAILED, CANCELLED -> throw new com.flowforge.exception.ExecutionConflictException(
+                    "Only queued or running executions can be cancelled."
+            );
+        }
+        return execution.getStatus();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean isCancellationRequested(UUID executionId) {
+        return executionRepository.findById(executionId)
+                .map(execution -> execution.getStatus() == ExecutionStatus.CANCELLING)
+                .orElse(true);
+    }
+
+    @Transactional
+    public void cancelExecution(UUID executionId) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Execution not found: " + executionId));
+        if (execution.getStatus() == ExecutionStatus.CANCELLING || execution.getStatus() == ExecutionStatus.QUEUED) {
+            finishCancellation(execution);
+            skipPendingNodes(executionId);
+            appendLifecycleLog(execution, ExecutionLogLevel.INFO, "Execution cancelled.", "EXECUTION_CANCELLED");
+        }
+    }
+
+    @Transactional
+    public void recoverInterruptedExecution(UUID executionId) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId).orElse(null);
+        if (execution == null || (execution.getStatus() != ExecutionStatus.RUNNING
+                && execution.getStatus() != ExecutionStatus.CANCELLING)) return;
+        if (execution.getStatus() == ExecutionStatus.CANCELLING) {
+            for (NodeExecution node : nodeExecutionRepository.findAllByExecution_Id(executionId)) {
+                if (node.getStatus() == NodeExecutionStatus.RUNNING) {
+                    node.transitionTo(
+                            NodeExecutionStatus.FAILED,
+                            node.getInputData(),
+                            null,
+                            "Active node was interrupted during application shutdown."
+                    );
+                } else if (node.getStatus() == NodeExecutionStatus.PENDING) {
+                    node.transitionTo(NodeExecutionStatus.SKIPPED, null, null, null);
+                }
+            }
+            finishCancellation(execution);
+            appendLifecycleLog(execution, ExecutionLogLevel.INFO, "Execution cancelled during application shutdown.", "EXECUTION_CANCELLED");
+            return;
+        }
+        String error = "Execution was interrupted when the application stopped.";
+        for (NodeExecution node : nodeExecutionRepository.findAllByExecution_Id(executionId)) {
+            if (node.getStatus() == NodeExecutionStatus.RUNNING) {
+                node.transitionTo(NodeExecutionStatus.FAILED, node.getInputData(), null, error);
+            } else if (node.getStatus() == NodeExecutionStatus.PENDING) {
+                node.transitionTo(NodeExecutionStatus.SKIPPED, null, null, null);
+            }
+        }
+        execution.transitionTo(ExecutionStatus.FAILED, error, "EXECUTION_INTERRUPTED");
+        appendLifecycleLog(execution, ExecutionLogLevel.ERROR, error, "EXECUTION_INTERRUPTED");
+    }
+
+    @Transactional
+    public void skipPendingNodes(UUID executionId) {
+        nodeExecutionRepository.findAllByExecution_Id(executionId).stream()
+                .filter(node -> node.getStatus() == NodeExecutionStatus.PENDING)
+                .forEach(node -> node.transitionTo(NodeExecutionStatus.SKIPPED, null, null, null));
+    }
+
+    private void reconcileNodesBeforeTerminal(UUID executionId, String error) {
+        for (NodeExecution node : nodeExecutionRepository.findAllByExecution_Id(executionId)) {
+            if (node.getStatus() == NodeExecutionStatus.RUNNING) {
+                node.transitionTo(NodeExecutionStatus.FAILED, node.getInputData(), null, error);
+            } else if (node.getStatus() == NodeExecutionStatus.PENDING) {
+                node.transitionTo(NodeExecutionStatus.SKIPPED, null, null, null);
+            }
+        }
+    }
+
+    private void finishCancellation(Execution execution) {
+        execution.transitionTo(ExecutionStatus.CANCELLED, "Execution cancelled by request.", "EXECUTION_CANCELLED");
+    }
+
+    private void appendLifecycleLog(Execution execution, ExecutionLogLevel level, String message, String code) {
+        executionLogRepository.save(new ExecutionLog(execution, null, level, message, detailsWithCode(code)));
+    }
+
+    private JsonNode detailsWithCode(String code) {
+        return objectMapper.createObjectNode().put("errorCode", code);
     }
 
     @Transactional

@@ -9,6 +9,10 @@ public interface NodeExecutor {
     default void validateConfiguration(JsonNode configuration) {
     }
 
+    default boolean abortOnWorkflowCancellation() {
+        return false;
+    }
+
     JsonNode execute(JsonNode input, ExecutionContext context) throws Exception;
 
     default NodeExecutionResult executeResult(JsonNode input, ExecutionContext context) throws Exception {

@@ -128,7 +128,7 @@ describe('WorkflowEditor execution flow', () => {
     fixture.detectChanges();
 
     expect(executionApi.startExecution).toHaveBeenCalledOnce();
-    expect(executionApi.startExecution).toHaveBeenCalledWith('workflow-123', { user: 'Mina', count: 2 });
+    expect(executionApi.startExecution).toHaveBeenCalledWith('workflow-123', { user: 'Mina', count: 2 }, 300);
     expect(fixture.nativeElement.textContent).toContain('Open execution details');
     expect(fixture.nativeElement.textContent).toContain('execution-456');
   });
@@ -155,6 +155,34 @@ describe('WorkflowEditor execution flow', () => {
     expect(input.value).toBe('{"user":"Alex","message":"keep me"}');
     expect(root.querySelector('[role="alert"]')?.textContent)
       .toContain('Workflow contains an unsupported node type.');
+  });
+
+  it('validates the timeout range and submits the selected timeout', async () => {
+    const root = fixture.nativeElement as HTMLElement;
+    Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('Run / Test'))
+      ?.click();
+    fixture.detectChanges();
+
+    const timeout = root.querySelector('#execution-timeout') as HTMLInputElement;
+    timeout.value = '0';
+    timeout.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    const executeButton = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('Execute workflow')) as HTMLButtonElement;
+    expect(executeButton.disabled).toBe(true);
+    expect(root.textContent).toContain('between 1 and 3600 seconds');
+
+    timeout.value = '45';
+    timeout.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    executeButton.click();
+    await fixture.whenStable();
+    expect(executionApi.startExecution).toHaveBeenCalledWith(
+      'workflow-123',
+      { user: 'Alex', message: 'Hello FlowForge' },
+      45
+    );
   });
 
   it('creates an IF node with canonical TRUE/FALSE handles and persists typed conditions', async () => {
@@ -195,6 +223,121 @@ describe('WorkflowEditor execution flow', () => {
     };
     const condition = saved.definition.nodes.find((node) => node.type === 'if-condition');
     expect(condition?.configuration['value']).toBe(18);
+  });
+
+  it('configures and saves an HTTP Request node with structured request settings', async () => {
+    const root = fixture.nativeElement as HTMLElement;
+    const addHttp = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('HTTP Request')) as HTMLButtonElement;
+    addHttp.click();
+    fixture.detectChanges();
+
+    expect(root.textContent).toContain('Query parameters');
+    expect(root.textContent).toContain('Headers');
+    expect(root.textContent).toContain('stored with this workflow');
+    const method = root.querySelector('aside select') as HTMLSelectElement;
+    expect(method.value).toBe('GET');
+    method.value = 'PATCH';
+    method.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+
+    const timeout = root.querySelector('aside input[type="number"]') as HTMLInputElement;
+    timeout.value = '45';
+    timeout.dispatchEvent(new Event('input'));
+    const url = root.querySelector('aside input[type="url"]') as HTMLInputElement;
+    url.value = 'https://api.example.test/users';
+    url.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    const addParameter = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('Add parameter')) as HTMLButtonElement;
+    addParameter.click();
+    fixture.detectChanges();
+    const parameterName = root.querySelector('[aria-label="Query parameter name"]') as HTMLInputElement;
+    const parameterValue = root.querySelector('[aria-label="Query parameter value"]') as HTMLInputElement;
+    parameterName.value = 'filter';
+    parameterName.dispatchEvent(new Event('input'));
+    parameterValue.value = 'active users';
+    parameterValue.dispatchEvent(new Event('input'));
+
+    const addHeader = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('Add header')) as HTMLButtonElement;
+    addHeader.click();
+    fixture.detectChanges();
+    (root.querySelector('[aria-label="Header name"]') as HTMLInputElement).value = 'Accept';
+    (root.querySelector('[aria-label="Header name"]') as HTMLInputElement).dispatchEvent(new Event('input'));
+    (root.querySelector('[aria-label="Header value"]') as HTMLInputElement).value = 'application/json';
+    (root.querySelector('[aria-label="Header value"]') as HTMLInputElement).dispatchEvent(new Event('input'));
+
+    const bodyType = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('Request body'))
+      ?.querySelector('select') as HTMLSelectElement;
+    bodyType.value = 'json';
+    bodyType.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    const body = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('JSON body'))
+      ?.querySelector('textarea') as HTMLTextAreaElement;
+    body.value = '{"name":"Alex"}';
+    body.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    const saveButton = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.trim() === 'Save') as HTMLButtonElement;
+    saveButton.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const workflowApi = TestBed.inject(WorkflowApiService) as unknown as {
+      updateWorkflow: ReturnType<typeof vi.fn>;
+    };
+    const saved = workflowApi.updateWorkflow.mock.calls.at(-1)?.[1] as {
+      definition: { nodes: Array<{ type: string; configuration: Record<string, unknown> }> };
+    };
+    const httpNode = saved.definition.nodes.find((node) => node.type === 'http-request');
+    expect(httpNode?.configuration['method']).toBe('PATCH');
+    expect(httpNode?.configuration['timeoutSeconds']).toBe(45);
+    expect(httpNode?.configuration['queryParameters']).toEqual([
+      { name: 'filter', value: 'active users', enabled: true }
+    ]);
+    expect(httpNode?.configuration['headers']).toEqual([
+      { name: 'Accept', value: 'application/json', enabled: true }
+    ]);
+    expect(httpNode?.configuration['body']).toEqual({ name: 'Alex' });
+  });
+
+  it('shows HTTP URL and JSON body validation feedback', () => {
+    const root = fixture.nativeElement as HTMLElement;
+    Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('HTTP Request'))
+      ?.click();
+    fixture.detectChanges();
+
+    const url = root.querySelector('aside input[type="url"]') as HTMLInputElement;
+    url.value = 'file:///etc/passwd';
+    url.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(root.textContent).toContain('Use an HTTP or HTTPS URL');
+
+    const timeout = root.querySelector('aside input[type="number"]') as HTMLInputElement;
+    timeout.value = '0';
+    timeout.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(root.textContent).toContain('Request timeout must be a whole number between 1 and 3600 seconds');
+
+    const bodyType = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('Request body'))
+      ?.querySelector('select') as HTMLSelectElement;
+    bodyType.value = 'json';
+    bodyType.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    const body = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('JSON body'))
+      ?.querySelector('textarea') as HTMLTextAreaElement;
+    body.value = '{"unterminated":';
+    body.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(root.textContent).toContain('Enter valid JSON for the request body');
   });
 
   it('creates and saves a connection from a conditional output using its canonical handle ID', async () => {

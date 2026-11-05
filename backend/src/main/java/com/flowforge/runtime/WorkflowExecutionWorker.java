@@ -1,6 +1,7 @@
 package com.flowforge.runtime;
 
 import com.flowforge.service.ExecutionStateService;
+import com.flowforge.service.ExecutionRecoveryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -13,10 +14,16 @@ public class WorkflowExecutionWorker {
 
     private final WorkflowExecutionRuntime runtime;
     private final ExecutionStateService stateService;
+    private final ExecutionRecoveryService recoveryService;
 
-    public WorkflowExecutionWorker(WorkflowExecutionRuntime runtime, ExecutionStateService stateService) {
+    public WorkflowExecutionWorker(
+            WorkflowExecutionRuntime runtime,
+            ExecutionStateService stateService,
+            ExecutionRecoveryService recoveryService
+    ) {
         this.runtime = runtime;
         this.stateService = stateService;
+        this.recoveryService = recoveryService;
     }
 
     @Async("workflowExecutionExecutor")
@@ -34,6 +41,8 @@ public class WorkflowExecutionWorker {
                 LOGGER.error("Unable to record worker failure for workflow execution {} ({})",
                         event.executionId(), recordingException.getClass().getSimpleName());
             }
+        } finally {
+            recoveryService.workerFinished(event.executionId());
         }
     }
 }

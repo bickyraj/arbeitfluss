@@ -21,6 +21,14 @@ public class ApiExceptionHandler {
         return build(HttpStatus.NOT_FOUND, ex.getMessage(), request.getRequestURI());
     }
 
+    @ExceptionHandler(ExecutionConflictException.class)
+    public ResponseEntity<ErrorResponse> handleExecutionConflict(
+            ExecutionConflictException ex,
+            HttpServletRequest request
+    ) {
+        return build(HttpStatus.CONFLICT, ex.getMessage(), request.getRequestURI());
+    }
+
     @ExceptionHandler(InvalidExecutionRequestException.class)
     public ResponseEntity<ErrorResponse> handleInvalidExecutionRequest(
             InvalidExecutionRequestException ex,
