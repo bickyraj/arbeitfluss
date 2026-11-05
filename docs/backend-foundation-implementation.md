@@ -82,8 +82,8 @@ arbeitfluss/
 │   ├── gradlew.bat
 │   ├── build.gradle.kts
 │   ├── settings.gradle.kts
+│   ├── docker-compose.yml
 │   └── Dockerfile
-├── docker-compose.yml
 └── ...
 ```
 

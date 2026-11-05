@@ -1,6 +1,9 @@
-import { Component, computed, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Activity, AlertTriangle, ArrowRightLeft, Ban, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Database, Download, Filter, Gauge, LucideAngularModule, RefreshCw, Search, ShieldAlert, XCircle } from 'lucide-angular';
 import { MainLayoutComponent } from '../../layout/main-layout/main-layout';
+import { ExecutionDetailsComponent } from './execution-details';
 
 export type ExecutionStatus = 'Succeeded' | 'Failed' | 'Running' | 'Cancelled';
 export type ExecutionSortOption = 'newest' | 'oldest' | 'duration-desc' | 'status';
@@ -190,7 +193,7 @@ const executionSeed: ExecutionRecord[] = [
 @Component({
   selector: 'app-executions-page',
   standalone: true,
-  imports: [MainLayoutComponent, LucideAngularModule],
+  imports: [MainLayoutComponent, LucideAngularModule, ExecutionDetailsComponent],
   template: `
     <app-main-layout [title]="'Executions'">
       <div class="space-y-6">
@@ -306,7 +309,9 @@ const executionSeed: ExecutionRecord[] = [
           </section>
 
           <aside class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            @if (selectedExecution(); as execution) {
+            @if (focusedExecutionId(); as executionId) {
+              <app-execution-details [executionId]="executionId" />
+            } @else if (selectedExecution(); as execution) {
               <div class="space-y-5">
                 <div class="flex items-start justify-between gap-3">
                   <div>
@@ -409,7 +414,9 @@ const executionSeed: ExecutionRecord[] = [
   host: { class: 'block' }
 })
 export class ExecutionsPageComponent {
+  private readonly route = inject(ActivatedRoute);
   protected readonly executions = signal<ExecutionRecord[]>(executionSeed);
+  protected readonly focusedExecutionId = signal<string | null>(null);
   protected readonly search = signal('');
   protected readonly statusFilter = signal<'All' | ExecutionStatus>('All');
   protected readonly sortBy = signal<ExecutionSortOption>('newest');
@@ -424,6 +431,12 @@ export class ExecutionsPageComponent {
   protected readonly clockIcon = Clock3;
 
   protected readonly pageSize = 5;
+
+  constructor() {
+    this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
+      this.focusedExecutionId.set(params.get('executionId'));
+    });
+  }
 
   protected readonly stats = computed(() => {
     const total = this.executions().length;

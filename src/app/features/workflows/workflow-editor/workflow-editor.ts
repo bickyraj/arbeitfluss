@@ -1,6 +1,8 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
+import { ExecutionApiService } from '../../../core/services/execution-api.service';
+import { ExecutionDetailsComponent } from '../../executions/execution-details';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -155,7 +157,7 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 @Component({
   selector: 'app-workflow-editor',
   standalone: true,
-  imports: [LucideAngularModule, RouterLink],
+  imports: [LucideAngularModule, RouterLink, ExecutionDetailsComponent],
   template: `
     <div class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900" (window:pointerup)="handleGlobalPointerUp($event)">
       <header class="border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-5">
@@ -215,7 +217,7 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
             <button type="button" class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300" [disabled]="isLoading()" (click)="saveState()">
               {{ isLoading() ? 'Saving...' : 'Save' }}
             </button>
-            <button type="button" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800" (click)="runPlaceholder()">
+            <button type="button" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800" (click)="openExecutionDialog()">
               Run / Test
             </button>
           </div>
@@ -461,6 +463,81 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
           }
         </aside>
       </div>
+
+      @if (executionDialogOpen()) {
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4" (click)="closeExecutionDialog()">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="execution-dialog-title"
+            class="mx-auto my-6 max-h-[calc(100vh-3rem)] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:p-6"
+            (click)="$event.stopPropagation()"
+          >
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="execution-dialog-title" class="text-xl font-semibold text-slate-900">Run workflow</h2>
+                <p class="mt-1 text-sm text-slate-600">Provide JSON input for the Manual Trigger node.</p>
+              </div>
+              <button type="button" aria-label="Close run dialog" class="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100" [disabled]="isStartingExecution()" (click)="closeExecutionDialog()">✕</button>
+            </div>
+
+            <div class="mt-5">
+              <label for="execution-trigger-input" class="block text-sm font-medium text-slate-700">Trigger input (JSON)</label>
+              <textarea
+                id="execution-trigger-input"
+                rows="8"
+                spellcheck="false"
+                [value]="executionInput()"
+                [disabled]="isStartingExecution() || startedExecutionId() !== null"
+                class="mt-2 w-full resize-y rounded-2xl border border-slate-300 bg-slate-950 px-4 py-3 font-mono text-sm text-slate-100 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:opacity-70"
+                aria-describedby="execution-input-help execution-input-error"
+                (input)="updateExecutionInput($event)"
+              ></textarea>
+              <p id="execution-input-help" class="mt-2 text-xs text-slate-500">The parsed JSON value is sent as <code>triggerInput</code> and becomes the Manual Trigger node's output.</p>
+              @if (executionInputError()) {
+                <p id="execution-input-error" role="alert" class="mt-2 text-sm text-rose-700">{{ executionInputError() }}</p>
+              }
+            </div>
+
+            @if (!workflowId() || state().isDirty) {
+              <p role="status" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                {{ !workflowId() ? 'Save this workflow before running it.' : 'Save your changes before running. Execution uses the saved workflow graph.' }}
+              </p>
+            }
+            <p class="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+              Currently executable node types are Manual Trigger, Set Data, and Log Message. Other node types, including HTTP Request and IF Condition, are not executable yet.
+            </p>
+
+            @if (executionStartError()) {
+              <p role="alert" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{{ executionStartError() }}</p>
+            }
+
+            @if (startedExecutionId(); as executionId) {
+              <div class="mt-5 space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <p class="text-sm font-medium text-slate-700">Execution accepted. Status and node results update while it runs.</p>
+                  <a
+                    [routerLink]="['/executions']"
+                    [queryParams]="{ executionId: executionId }"
+                    class="rounded-xl border border-indigo-200 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+                  >Open execution details</a>
+                </div>
+                <app-execution-details [executionId]="executionId" />
+              </div>
+            } @else {
+              <div class="mt-5 flex flex-wrap justify-end gap-3">
+                <button type="button" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50" [disabled]="isStartingExecution()" (click)="closeExecutionDialog()">Cancel</button>
+                <button
+                  type="button"
+                  class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  [disabled]="isStartingExecution() || !!executionInputError() || !workflowId() || state().isDirty || isLoading()"
+                  (click)="startWorkflowExecution()"
+                >{{ isStartingExecution() ? 'Starting…' : 'Execute workflow' }}</button>
+              </div>
+            }
+          </section>
+        </div>
+      }
     </div>
   `
 })
@@ -468,6 +545,7 @@ export class WorkflowEditorComponent {
   protected readonly router = inject(Router);
   protected readonly route = inject(ActivatedRoute);
   protected readonly workflowApi = inject(WorkflowApiService);
+  protected readonly executionApi = inject(ExecutionApiService);
   protected readonly storageKey = 'flowforge-workflow-states';
   protected readonly history = signal<WorkflowEditorState[]>([]);
   protected readonly historyIndex = signal(0);
@@ -475,6 +553,19 @@ export class WorkflowEditorComponent {
   protected readonly saveMessage = signal<string | null>(null);
   protected readonly saveError = signal<string | null>(null);
   protected readonly workflowId = signal<string | null>(null);
+  protected readonly executionDialogOpen = signal(false);
+  protected readonly executionInput = signal('{\n  "user": "Alex",\n  "message": "Hello FlowForge"\n}');
+  protected readonly isStartingExecution = signal(false);
+  protected readonly executionStartError = signal<string | null>(null);
+  protected readonly startedExecutionId = signal<string | null>(null);
+  protected readonly executionInputError = computed(() => {
+    try {
+      JSON.parse(this.executionInput());
+      return null;
+    } catch {
+      return 'Enter valid JSON before starting the workflow.';
+    }
+  });
 
   constructor() {
     const routeId = this.route.snapshot.paramMap.get('id');
@@ -957,8 +1048,59 @@ export class WorkflowEditorComponent {
     });
   }
 
-  protected runPlaceholder(): void {
-    window.alert('Frontend-only placeholder: workflow execution is not available in this milestone.');
+  protected openExecutionDialog(): void {
+    this.executionStartError.set(null);
+    this.startedExecutionId.set(null);
+    this.executionDialogOpen.set(true);
+  }
+
+  protected closeExecutionDialog(): void {
+    if (!this.isStartingExecution()) {
+      this.executionDialogOpen.set(false);
+    }
+  }
+
+  protected updateExecutionInput(event: Event): void {
+    const target = event.target as HTMLTextAreaElement | null;
+    this.executionInput.set(target?.value ?? '');
+    this.executionStartError.set(null);
+  }
+
+  protected startWorkflowExecution(): void {
+    if (this.isStartingExecution() || this.executionInputError()) {
+      return;
+    }
+    const workflowId = this.workflowId();
+    if (!workflowId || this.state().isDirty || this.isLoading()) {
+      this.executionStartError.set(
+        !workflowId ? 'Save this workflow before running it.' : 'Save your changes before running the workflow.'
+      );
+      return;
+    }
+
+    let triggerInput: unknown;
+    try {
+      triggerInput = JSON.parse(this.executionInput());
+    } catch {
+      this.executionStartError.set('Enter valid JSON before starting the workflow.');
+      return;
+    }
+
+    this.isStartingExecution.set(true);
+    this.executionStartError.set(null);
+    this.executionApi.startExecution(workflowId, triggerInput).subscribe({
+      next: (execution) => {
+        this.isStartingExecution.set(false);
+        this.startedExecutionId.set(execution.id);
+      },
+      error: (error: HttpErrorResponse) => {
+        this.isStartingExecution.set(false);
+        const message = error.error && typeof error.error === 'object' && 'message' in error.error
+          ? String(error.error.message)
+          : null;
+        this.executionStartError.set(message || 'Unable to start workflow execution. Your JSON input is preserved; please try again.');
+      }
+    });
   }
 
   protected undo(): void {

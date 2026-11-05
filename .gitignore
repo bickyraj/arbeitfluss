@@ -45,5 +45,7 @@ Thumbs.db
 
 /.github/copilot-instructions.md
 /.github/*-implementation.md
-/backend
+/backend/.gradle/
+/backend/build/
+/backend/out/
 /docker-compose.yml
