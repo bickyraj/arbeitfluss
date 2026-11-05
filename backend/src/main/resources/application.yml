@@ -19,6 +19,8 @@ spring:
     locations: classpath:db/migration
 
 flowforge:
+  webhooks:
+    ingress-enabled: ${FLOWFORGE_WEBHOOK_INGRESS_ENABLED:false}
   security:
     admin-token: ${FLOWFORGE_ADMIN_TOKEN:}
 

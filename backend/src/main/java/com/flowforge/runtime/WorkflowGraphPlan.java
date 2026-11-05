@@ -10,6 +10,7 @@ import java.util.stream.Collectors;
 
 public record WorkflowGraphPlan(
         String triggerNodeId,
+        String triggerNodeType,
         List<Node> executionOrder,
         Map<String, List<Connection>> incomingConnections,
         Map<String, List<Connection>> outgoingConnections

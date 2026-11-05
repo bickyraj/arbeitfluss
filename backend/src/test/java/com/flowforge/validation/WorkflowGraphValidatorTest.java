@@ -6,10 +6,12 @@ import com.flowforge.exception.InvalidExecutionRequestException;
 import com.flowforge.executor.LogMessageExecutor;
 import com.flowforge.executor.ManualTriggerExecutor;
 import com.flowforge.executor.IfConditionExecutor;
+import com.flowforge.executor.NodeExecutor;
 import com.flowforge.executor.NodeExecutorRegistry;
 import com.flowforge.executor.SetDataExecutor;
 import com.flowforge.executor.WebhookTriggerExecutor;
 import com.flowforge.runtime.WorkflowGraphPlan;
+import com.flowforge.runtime.ExecutionContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -48,8 +50,38 @@ class WorkflowGraphValidatorTest {
         WorkflowGraphPlan graph = validator.validate(definition);
 
         assertThat(graph.triggerNodeId()).isEqualTo("trigger");
+        assertThat(graph.triggerNodeType()).isEqualTo("manual-trigger");
         assertThat(graph.executionOrder()).extracting(WorkflowGraphPlan.Node::id)
                 .containsExactly("trigger", "set-a", "set-b", "log");
+    }
+
+    @Test
+    void aiModelIsAProcessingNodeAndDoesNotReplaceTheManualTrigger() throws Exception {
+        WorkflowGraphValidator validatorWithAi = new WorkflowGraphValidator(new NodeExecutorRegistry(List.of(
+                new ManualTriggerExecutor(),
+                testExecutor("ai-model"),
+                new LogMessageExecutor()
+        )));
+        JsonNode definition = objectMapper.readTree("""
+                {
+                  "nodes":[
+                    {"id":"ai","type":"ai-model","configuration":{}},
+                    {"id":"log","type":"log-message","configuration":{"message":"done"}},
+                    {"id":"trigger","type":"manual-trigger","configuration":{}}
+                  ],
+                  "connections":[
+                    {"id":"edge-1","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"ai","targetHandle":"input"},
+                    {"id":"edge-2","sourceNodeId":"ai","sourceHandle":"output","targetNodeId":"log","targetHandle":"input"}
+                  ]
+                }
+                """);
+
+        WorkflowGraphPlan graph = validatorWithAi.validate(definition);
+
+        assertThat(graph.triggerNodeId()).isEqualTo("trigger");
+        assertThat(graph.triggerNodeType()).isEqualTo("manual-trigger");
+        assertThat(graph.executionOrder()).extracting(WorkflowGraphPlan.Node::id)
+                .containsExactly("trigger", "ai", "log");
     }
 
     @Test
@@ -169,5 +201,19 @@ class WorkflowGraphValidatorTest {
         assertThatThrownBy(() -> validator.validate(definition))
                 .isInstanceOf(InvalidExecutionRequestException.class)
                 .hasMessageContaining(message);
+    }
+
+    private NodeExecutor testExecutor(String type) {
+        return new NodeExecutor() {
+            @Override
+            public String nodeType() {
+                return type;
+            }
+
+            @Override
+            public JsonNode execute(JsonNode input, ExecutionContext context) {
+                return input;
+            }
+        };
     }
 }

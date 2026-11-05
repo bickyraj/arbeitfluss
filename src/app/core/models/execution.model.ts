@@ -57,3 +57,24 @@ export interface ExecutionLogResponse {
   details: unknown;
   createdAt: string;
 }
+
+/** Safe visualization projection of the immutable execution definition, without configuration. */
+export interface ExecutionGraph {
+  nodes: ExecutionGraphNode[];
+  connections: ExecutionGraphConnection[];
+}
+
+export interface ExecutionGraphNode {
+  id: string;
+  type: string;
+  name: string;
+  position: { x: number; y: number } | null;
+}
+
+export interface ExecutionGraphConnection {
+  id: string;
+  sourceNodeId: string;
+  sourceHandle: string;
+  targetNodeId: string;
+  targetHandle: string;
+}

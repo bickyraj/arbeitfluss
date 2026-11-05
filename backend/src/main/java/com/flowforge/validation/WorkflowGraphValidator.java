@@ -168,6 +168,7 @@ public class WorkflowGraphValidator {
 
         return new WorkflowGraphPlan(
                 triggerId,
+                nodes.get(triggerId).type(),
                 topologicalOrder.stream().map(nodes::get).toList(),
                 incoming,
                 outgoing

@@ -10,11 +10,41 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.time.Instant;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidParameter(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request
+    ) {
+        return build(HttpStatus.BAD_REQUEST, "Invalid request parameter", safeRoute(request));
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleUnsupportedMethod(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request
+    ) {
+        ResponseEntity<ErrorResponse> error = build(
+                HttpStatus.METHOD_NOT_ALLOWED, "HTTP method not supported", safeRoute(request)
+        );
+        HttpHeaders headers = new HttpHeaders();
+        if (ex.getSupportedHttpMethods() != null) {
+            headers.setAllow(ex.getSupportedHttpMethods());
+        }
+        return new ResponseEntity<>(error.getBody(), headers, error.getStatusCode());
+    }
+
+    private String safeRoute(HttpServletRequest request) {
+        Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        return pattern == null ? "/api" : pattern.toString();
+    }
 
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleResourceNotFound(ResourceNotFoundException ex, HttpServletRequest request) {

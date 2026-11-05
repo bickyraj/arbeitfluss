@@ -21,6 +21,7 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
     'schedule-trigger': { name: 'Schedule Trigger', description: 'Runs on a recurring cadence.', config: { frequency: 'Daily', schedule: 'Every 24 hours' } },
     'webhook-trigger': { name: 'Webhook Trigger', description: 'Receives event payloads from an external app.', config: { url: 'https://example.com/webhook', method: 'POST' } },
     'http-request': { name: 'HTTP Request', description: 'Calls an outbound API.', config: { method: 'POST', url: 'https://api.example.com/v1/endpoint', headers: '{}', body: '{}' } },
+    'ai-model': { name: 'AI Model', description: 'Generates text through a backend-configured provider.', config: { provider: 'openai', model: 'gpt-4.1-mini', systemPrompt: '', userPrompt: 'Summarize: {{input}}', temperature: 0.7, maxOutputTokens: 512 } },
     'send-email': { name: 'Send Email', description: 'Delivers an email notification.', config: { recipient: 'ops@example.com', subject: 'Important update', message: 'This is a workflow notification.' } },
     'database-query': { name: 'Database Query', description: 'Reads or writes application data.', config: { query: 'SELECT * FROM events WHERE status = "open"', connection: 'Primary DB' } },
     'log-message': { name: 'Log Message', description: 'Sends a message to the execution log.', config: { message: 'Workflow step completed successfully.' } },

@@ -17,5 +17,7 @@ spring:
       enabled: true
 
 flowforge:
+  webhooks:
+    ingress-enabled: true
   security:
     admin-token: test-only-flowforge-admin-token-0123456789

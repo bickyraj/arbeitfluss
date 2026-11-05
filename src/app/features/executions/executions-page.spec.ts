@@ -37,6 +37,7 @@ describe('ExecutionsPageComponent', () => {
       getExecution: vi.fn(() => of(execution)),
       getNodeExecutions: vi.fn(() => of([])),
       getExecutionLogs: vi.fn(() => of([])),
+      getExecutionGraph: vi.fn(() => of({ nodes: [], connections: [] })),
       cancelExecution: vi.fn(),
       retryExecution: vi.fn()
     };

@@ -50,4 +50,15 @@ The in-process dispatcher and ordinary workflow retry do not provide exactly-onc
 
 The HTTP Request node and its outbound-network protections, configuration and output contract are documented in [HTTP_REQUEST_NODE.md](HTTP_REQUEST_NODE.md).
 
-Webhook Trigger requests are authenticated and resolved through persistent backend registration, then saved as `WEBHOOK` executions and dispatched through the same asynchronous execution pipeline described above. Their limits, safe input shape, rate limit, activation behavior, and response contract are documented in [WEBHOOK_TRIGGER.md](WEBHOOK_TRIGGER.md).
+Stage 2B provides persistent backend-owned webhook registrations and authenticated
+management APIs. Stage 3 admits inbound deliveries only when the explicit
+`FLOWFORGE_WEBHOOK_INGRESS_ENABLED` gate is enabled (default false). Webhook
+execution admission locks the parent workflow, rereads and authenticates the
+current registration/node configuration, and creates the immutable snapshot,
+execution and node records in the same transaction. It uses the existing
+after-commit asynchronous dispatcher; parsing happens before the lock is taken.
+Rejected requests create no executions. Later rotation/deactivation does not
+cancel already accepted work. Input limits, response codes, local rate limiting,
+operator enablement and remaining limitations are documented in
+[WEBHOOK_TRIGGER.md](WEBHOOK_TRIGGER.md). No second runtime or exactly-once
+delivery guarantee is introduced.

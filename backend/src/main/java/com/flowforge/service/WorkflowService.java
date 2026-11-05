@@ -3,6 +3,7 @@ package com.flowforge.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.flowforge.ai.AiConfigurationPolicy;
 import com.flowforge.dto.workflow.CreateWorkflowRequest;
 import com.flowforge.dto.workflow.UpdateWorkflowRequest;
 import com.flowforge.dto.workflow.WorkflowResponse;
@@ -35,14 +36,14 @@ public class WorkflowService {
     @Transactional
     public WorkflowResponse createWorkflow(CreateWorkflowRequest request) {
         JsonNode definition = request.definition() != null ? request.definition() : defaultDefinition(request.name());
+        AiConfigurationPolicy.rejectCredentialConfiguration(definition);
 
         Workflow workflow = new Workflow(
                 request.name().trim(),
                 request.description() == null ? "" : request.description().trim(),
                 request.active() != null ? request.active() : true,
-                definition
+                webhookRegistrationService.sanitizeDefinition(definition)
         );
-
         Workflow savedWorkflow = workflowRepository.saveAndFlush(workflow);
         webhookRegistrationService.synchronizeWorkflow(savedWorkflow);
         return WorkflowResponse.fromEntity(savedWorkflow);
@@ -62,7 +63,7 @@ public class WorkflowService {
 
     @Transactional
     public WorkflowResponse updateWorkflow(UUID id, UpdateWorkflowRequest request) {
-        Workflow workflow = findWorkflowOrThrow(id);
+        Workflow workflow = findWorkflowForRegistrationUpdate(id);
 
         if (request.name() != null && !request.name().isBlank()) {
             workflow.setName(request.name().trim());
@@ -77,6 +78,8 @@ public class WorkflowService {
             workflow.setDefinition(request.definition());
         }
 
+        AiConfigurationPolicy.rejectCredentialConfiguration(workflow.getDefinition());
+        workflow.setDefinition(webhookRegistrationService.sanitizeDefinition(workflow.getDefinition()));
         Workflow savedWorkflow = workflowRepository.saveAndFlush(workflow);
         webhookRegistrationService.synchronizeWorkflow(savedWorkflow);
         return WorkflowResponse.fromEntity(savedWorkflow);
@@ -84,9 +87,14 @@ public class WorkflowService {
 
     @Transactional
     public void deleteWorkflow(UUID id) {
-        Workflow workflow = findWorkflowOrThrow(id);
+        Workflow workflow = findWorkflowForRegistrationUpdate(id);
         webhookRegistrationService.deleteWorkflowWebhooks(id);
         workflowRepository.delete(workflow);
+    }
+
+    private Workflow findWorkflowForRegistrationUpdate(UUID id) {
+        return workflowRepository.findByIdForRegistrationUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + id));
     }
 
     private Workflow findWorkflowOrThrow(UUID id) {

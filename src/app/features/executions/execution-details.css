@@ -1,0 +1,12 @@
+:host { display:block; min-width:0; container-type:inline-size; container-name:execution; }
+.inspection-workspace { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; align-items:start; }
+@container execution (min-width:1000px) { .inspection-workspace { grid-template-columns:minmax(0,1.2fr) minmax(340px,.8fr); } }
+.summary-label { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:#64748b; }
+.state-pill { display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:10px; font-weight:700; letter-spacing:.03em; background:#f1f5f9; color:#475569; }
+.state-pill[data-status=QUEUED],.state-pill[data-status=RUNNING],.state-pill[data-status=CANCELLING] { background:#fffbeb; color:#b45309; }
+.state-pill[data-status=SUCCEEDED] { background:#ecfdf5; color:#047857; }
+.state-pill[data-status=FAILED] { background:#fff1f2; color:#be123c; }
+.state-pill[data-status=SKIPPED] { border:1px dashed #cbd5e1; }
+.inspector-tab { padding:12px 10px; border-bottom:2px solid transparent; font-size:11px; font-weight:600; text-transform:capitalize; color:#64748b; }
+.inspector-tab.is-active { border-color:#6366f1; color:#4f46e5; background:white; }
+button:focus-visible,a:focus-visible,select:focus-visible { outline:2px solid #818cf8; outline-offset:3px; }

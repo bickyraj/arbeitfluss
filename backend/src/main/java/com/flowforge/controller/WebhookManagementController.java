@@ -27,13 +27,18 @@ public class WebhookManagementController {
         return registrationService.listWorkflowWebhooks(workflowId);
     }
 
+    @GetMapping("/{nodeId}")
+    public WebhookRegistrationResponse get(@PathVariable UUID workflowId, @PathVariable String nodeId) {
+        return registrationService.getWorkflowWebhook(workflowId, nodeId);
+    }
+
     @PostMapping("/{nodeId}/secret")
     public ResponseEntity<WebhookSecretResponse> regenerateSecret(
             @PathVariable UUID workflowId,
             @PathVariable String nodeId
     ) {
-        return ResponseEntity.ok(new WebhookSecretResponse(
-                registrationService.regenerateSecret(workflowId, nodeId)
-        ));
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store")
+                .body(registrationService.regenerateSecret(workflowId, nodeId));
     }
 }

@@ -20,11 +20,11 @@ public interface ExecutionRepository extends JpaRepository<Execution, UUID> {
     @Query("""
             select e from Execution e
             where (:status is null or e.status = :status)
-              and (:search is null or lower(e.workflowName) like lower(concat('%', :search, '%')))
+              and lower(e.workflowName) like lower(:searchPattern)
             """)
     Page<Execution> searchAll(
             @Param("status") ExecutionStatus status,
-            @Param("search") String search,
+            @Param("searchPattern") String searchPattern,
             Pageable pageable
     );
 

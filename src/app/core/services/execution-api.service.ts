@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 
 import { environment } from '../../../environments/environment';
 import type {
+  ExecutionGraph,
   ExecutionLogResponse,
   ExecutionPage,
   ExecutionResponse,
@@ -60,6 +61,10 @@ export class ExecutionApiService {
 
   getExecution(executionId: string): Observable<ExecutionResponse> {
     return this.http.get<ExecutionResponse>(`${this.baseUrl}/${encodeURIComponent(executionId)}`);
+  }
+
+  getExecutionGraph(executionId: string): Observable<ExecutionGraph> {
+    return this.http.get<ExecutionGraph>(`${this.baseUrl}/${encodeURIComponent(executionId)}/graph`);
   }
 
   getNodeExecutions(executionId: string): Observable<NodeExecutionResponse[]> {

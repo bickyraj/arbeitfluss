@@ -3,6 +3,7 @@ export type WorkflowNodeType =
   | 'schedule-trigger'
   | 'webhook-trigger'
   | 'http-request'
+  | 'ai-model'
   | 'send-email'
   | 'database-query'
   | 'log-message'

@@ -5,6 +5,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.flowforge.entity.Workflow;
+import com.flowforge.entity.WebhookRegistration;
+import com.flowforge.repository.WebhookRegistrationRepository;
+import com.flowforge.exception.WebhookRequestRejectedException;
+import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Propagation;
 import com.flowforge.exception.ResourceNotFoundException;
 import com.flowforge.runtime.ExecutionDispatcher;
 import com.flowforge.dto.execution.ExecutionLogResponse;
@@ -12,6 +17,7 @@ import com.flowforge.dto.execution.ExecutionRequest;
 import com.flowforge.dto.execution.ExecutionStartResponse;
 import com.flowforge.dto.execution.NodeExecutionResponse;
 import com.flowforge.dto.execution.ExecutionResponse;
+import com.flowforge.dto.execution.ExecutionGraphResponse;
 import com.flowforge.entity.ExecutionLog;
 import com.flowforge.entity.NodeExecution;
 import com.flowforge.entity.Execution;
@@ -55,6 +61,9 @@ public class ExecutionService {
     private final ExecutionDispatchFailureRecorder dispatchFailureRecorder;
     private final WorkflowGraphValidator graphValidator;
     private final ExecutionStateService stateService;
+    private final WebhookRegistrationRepository webhookRegistrationRepository;
+    private final WebhookRegistrationService webhookRegistrationService;
+    private final WebhookIngressSettings webhookIngressSettings;
 
     public ExecutionService(
             WorkflowRepository workflowRepository,
@@ -65,7 +74,10 @@ public class ExecutionService {
             ExecutionDispatcher executionDispatcher,
             ExecutionDispatchFailureRecorder dispatchFailureRecorder,
             WorkflowGraphValidator graphValidator,
-            ExecutionStateService stateService
+            ExecutionStateService stateService,
+            WebhookRegistrationRepository webhookRegistrationRepository,
+            WebhookRegistrationService webhookRegistrationService,
+            WebhookIngressSettings webhookIngressSettings
     ) {
         this.workflowRepository = workflowRepository;
         this.executionRepository = executionRepository;
@@ -76,26 +88,40 @@ public class ExecutionService {
         this.dispatchFailureRecorder = dispatchFailureRecorder;
         this.graphValidator = graphValidator;
         this.stateService = stateService;
+        this.webhookRegistrationRepository = webhookRegistrationRepository;
+        this.webhookRegistrationService = webhookRegistrationService;
+        this.webhookIngressSettings = webhookIngressSettings;
     }
 
     @Transactional
     public ExecutionStartResponse startExecution(UUID workflowId, ExecutionRequest request) {
-        return startExecution(workflowId, request, ExecutionTriggerType.MANUAL);
+        return startExecution(workflowId, request, ExecutionTriggerType.MANUAL, null);
     }
 
-    @Transactional
-    public ExecutionStartResponse startWebhookExecution(UUID workflowId, JsonNode triggerInput) {
-        return startExecution(
-                workflowId,
-                new ExecutionRequest(triggerInput, null),
-                ExecutionTriggerType.WEBHOOK
-        );
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public ExecutionStartResponse startWebhookExecution(
+            String webhookId, String method, String presentedSecret, JsonNode triggerInput
+    ) {
+        if (!webhookIngressSettings.isEnabled() || webhookId == null || !webhookId.matches("[A-Za-z0-9_-]{43}")) {
+            throw new WebhookRequestRejectedException(HttpStatus.NOT_FOUND);
+        }
+        // Scalar discovery must not preload a stale registration/workflow into the persistence context.
+        UUID workflowId = webhookRegistrationRepository.findWorkflowIdForIngress(webhookId)
+                .orElseThrow(() -> new WebhookRequestRejectedException(HttpStatus.NOT_FOUND));
+        Workflow workflow = workflowRepository.findByIdForRegistrationUpdate(workflowId)
+                .orElseThrow(() -> new WebhookRequestRejectedException(HttpStatus.NOT_FOUND));
+        WebhookRegistration registration = webhookRegistrationRepository.findByWebhookId(webhookId)
+                .orElseThrow(() -> new WebhookRequestRejectedException(HttpStatus.NOT_FOUND));
+        webhookRegistrationService.authorizeIngress(registration, workflow, method, presentedSecret);
+        return startExecution(workflowId, new ExecutionRequest(triggerInput, null),
+                ExecutionTriggerType.WEBHOOK, registration.getNodeId());
     }
 
     private ExecutionStartResponse startExecution(
             UUID workflowId,
             ExecutionRequest request,
-            ExecutionTriggerType triggerType
+            ExecutionTriggerType triggerType,
+            String expectedWebhookNodeId
     ) {
         Workflow workflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
@@ -115,15 +141,13 @@ public class ExecutionService {
         JsonNode definition = snapshot.definition();
         validatePayloadSize(definition, MAX_DEFINITION_SNAPSHOT_BYTES, "Workflow definition");
         WorkflowGraphPlan graph = graphValidator.validate(definition);
-        String triggerTypeForRequest = graph.executionOrder().stream()
-                .filter(node -> node.id().equals(graph.triggerNodeId()))
-                .map(WorkflowGraphPlan.Node::type)
-                .findFirst()
-                .orElseThrow(() -> new InvalidExecutionRequestException("Workflow trigger node is missing"));
+        if (expectedWebhookNodeId != null && !expectedWebhookNodeId.equals(graph.triggerNodeId())) {
+            throw new WebhookRequestRejectedException(HttpStatus.NOT_FOUND);
+        }
         String expectedTriggerNodeType = triggerType == ExecutionTriggerType.WEBHOOK
                 ? "webhook-trigger"
                 : "manual-trigger";
-        if (!expectedTriggerNodeType.equals(triggerTypeForRequest)) {
+        if (!expectedTriggerNodeType.equals(graph.triggerNodeType())) {
             throw new InvalidExecutionRequestException(
                     "Execution trigger type does not match the workflow's root trigger"
             );
@@ -238,9 +262,15 @@ public class ExecutionService {
             String search,
             Pageable pageable
     ) {
-        String normalizedSearch = search == null || search.isBlank() ? null : search.trim();
-        return executionRepository.searchAll(status, normalizedSearch, pageable)
+        // Always bind a String: PostgreSQL cannot apply lower() to an untyped null bound as bytea.
+        String searchPattern = search == null || search.isBlank() ? "%" : "%" + search.trim() + "%";
+        return executionRepository.searchAll(status, searchPattern, pageable)
                 .map(ExecutionResponse::fromEntity);
+    }
+
+    @Transactional(readOnly = true)
+    public ExecutionGraphResponse getExecutionGraph(UUID executionId) {
+        return ExecutionGraphResponse.fromDefinition(findExecution(executionId).getWorkflowDefinition());
     }
 
     @Transactional(readOnly = true)

@@ -26,6 +26,8 @@ describe('ExecutionApiService', () => {
     expect(request.request.body).toEqual({
       triggerInput: { user: 'Alex', message: 'Hello FlowForge' }
     });
+    expect(request.request.body).not.toHaveProperty('triggerType');
+    expect(request.request.body).not.toHaveProperty('definition');
     request.flush({ id: 'execution-456', status: 'QUEUED', createdAt: '2026-11-05T00:00:00Z' });
   });
 
@@ -58,5 +60,13 @@ describe('ExecutionApiService', () => {
     const retryRequest = http.expectOne('/api/executions/execution-1/retry');
     expect(retryRequest.request.method).toBe('POST');
     retryRequest.flush({ id: 'execution-2', status: 'QUEUED', createdAt: '2026-11-05T00:00:00Z' });
+  });
+
+  it('loads the immutable execution graph projection', () => {
+    api.getExecutionGraph('execution-1').subscribe();
+
+    const request = http.expectOne('/api/executions/execution-1/graph');
+    expect(request.request.method).toBe('GET');
+    request.flush({ nodes: [], connections: [] });
   });
 });

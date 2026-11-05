@@ -71,6 +71,7 @@ describe('WorkflowEditor Webhook Trigger configuration', () => {
           useValue: {
             startExecution: vi.fn(() => of({ id: 'execution-id', status: 'QUEUED', createdAt: '' })),
             getExecution: vi.fn(() => of(null)),
+            getExecutionGraph: vi.fn(() => of({ nodes: [], connections: [] })),
             getNodeExecutions: vi.fn(() => of([])),
             getExecutionLogs: vi.fn(() => of([]))
           }

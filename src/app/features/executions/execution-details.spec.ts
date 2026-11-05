@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 
 import { ExecutionApiService } from '../../core/services/execution-api.service';
@@ -19,6 +20,9 @@ describe('ExecutionDetailsComponent branch monitoring', () => {
         completedAt: null,
         durationMs: 1,
         errorMessage: null,
+        errorCode: null,
+        timeoutSeconds: 300,
+        retryOfExecutionId: null,
         createdAt: '2026-11-05T00:00:00Z'
       })),
       getNodeExecutions: vi.fn(() => of([
@@ -87,12 +91,20 @@ describe('ExecutionDetailsComponent branch monitoring', () => {
           },
           createdAt: '2026-11-05T00:00:00Z'
         }
-      ]))
+      ])),
+      getExecutionGraph: vi.fn(() => of({
+        nodes: [
+          { id: 'unselected-path', type: 'log-message', name: 'Skipped branch', position: { x: 100, y: 100 } },
+          { id: 'request', type: 'http-request', name: 'Large request output', position: { x: 360, y: 100 } },
+          { id: 'failed-request', type: 'http-request', name: 'Failed request', position: { x: 620, y: 100 } }
+        ],
+        connections: []
+      }))
     };
 
     await TestBed.configureTestingModule({
       imports: [ExecutionDetailsComponent],
-      providers: [{ provide: ExecutionApiService, useValue: api }]
+      providers: [provideRouter([]), { provide: ExecutionApiService, useValue: api }]
     }).compileComponents();
     fixture = TestBed.createComponent(ExecutionDetailsComponent);
     fixture.componentRef.setInput('executionId', 'execution-1');
@@ -104,18 +116,18 @@ describe('ExecutionDetailsComponent branch monitoring', () => {
 
   it('distinguishes skipped nodes and displays the selected branch log', () => {
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.textContent).toContain('SKIPPED · branch not selected');
-    expect(root.textContent).toContain('selectedBranch');
+    expect(root.textContent).toContain('SKIPPED');
     expect(root.textContent).toContain('TRUE');
-    expect(root.textContent).toContain('Output preview is limited to 30,000 characters.');
     expect(root.textContent).toContain('HTTP status: 503');
     expect(root.textContent).toContain('Response format: Text');
-    expect(root.textContent).toContain('Node duration: 125 ms');
+    expect(root.textContent).toContain('125 ms');
     expect(root.textContent).toContain('HTTP request returned status 503.');
-    const skippedBadge = Array.from(root.querySelectorAll('span'))
-      .find((span) => span.textContent?.includes('SKIPPED')) as HTMLElement;
-    expect(skippedBadge.classList.contains('bg-slate-100')).toBe(true);
-    expect(skippedBadge.classList.contains('text-rose-700')).toBe(false);
+    expect(root.querySelector('[data-node-id="unselected-path"]')?.getAttribute('data-status')).toBe('SKIPPED');
+    const detailsButton = Array.from(root.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Show structured details')) as HTMLButtonElement;
+    detailsButton.click();
+    fixture.detectChanges();
+    expect(root.textContent).toContain('selectedBranch');
   });
 });
 
@@ -140,12 +152,13 @@ describe('ExecutionDetailsComponent reliability actions', () => {
       getExecution: vi.fn(() => of(active)),
       getNodeExecutions: vi.fn(() => of([])),
       getExecutionLogs: vi.fn(() => of([])),
+      getExecutionGraph: vi.fn(() => of({ nodes: [], connections: [] })),
       cancelExecution: vi.fn(() => of({ ...active, status: 'CANCELLING' as const })),
       retryExecution: vi.fn()
     };
     await TestBed.configureTestingModule({
       imports: [ExecutionDetailsComponent],
-      providers: [{ provide: ExecutionApiService, useValue: api }]
+      providers: [provideRouter([]), { provide: ExecutionApiService, useValue: api }]
     }).compileComponents();
     const fixture = TestBed.createComponent(ExecutionDetailsComponent);
     fixture.componentRef.setInput('executionId', 'active-1');
@@ -182,6 +195,7 @@ describe('ExecutionDetailsComponent reliability actions', () => {
       })),
       getNodeExecutions: vi.fn(() => of([])),
       getExecutionLogs: vi.fn(() => of([])),
+      getExecutionGraph: vi.fn(() => of({ nodes: [], connections: [] })),
       cancelExecution: vi.fn(),
       retryExecution: vi.fn(() => of({
         id: 'retry-1',
@@ -192,7 +206,7 @@ describe('ExecutionDetailsComponent reliability actions', () => {
 
     await TestBed.configureTestingModule({
       imports: [ExecutionDetailsComponent],
-      providers: [{ provide: ExecutionApiService, useValue: api }]
+      providers: [provideRouter([]), { provide: ExecutionApiService, useValue: api }]
     }).compileComponents();
     const fixture = TestBed.createComponent(ExecutionDetailsComponent);
     fixture.componentRef.setInput('executionId', 'failed-1');

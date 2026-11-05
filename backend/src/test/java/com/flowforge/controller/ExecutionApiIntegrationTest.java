@@ -63,6 +63,59 @@ class ExecutionApiIntegrationTest {
     @Autowired private ExecutionRecoveryService executionRecoveryService;
 
     @Test
+    void executionHistorySupportsAbsentAndEmptySearchCaseInsensitiveSearchPaginationAndStatus() throws Exception {
+        UUID workflowId = createWorkflow();
+        var workflow = workflowRepository.findById(workflowId).orElseThrow();
+        String marker = "history-" + UUID.randomUUID();
+        JsonNode definition = objectMapper.readTree(DEFINITION);
+
+        Execution first = executionRepository.saveAndFlush(new Execution(
+                workflow, marker + " Alpha", definition,
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL, objectMapper.createObjectNode()));
+        Execution second = executionRepository.saveAndFlush(new Execution(
+                workflow, marker + " BETA", definition,
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL, objectMapper.createObjectNode()));
+        Execution failed = new Execution(
+                workflow, marker + " Gamma", definition,
+                com.flowforge.model.execution.ExecutionTriggerType.MANUAL, objectMapper.createObjectNode());
+        failed.transitionTo(ExecutionStatus.FAILED, "Test failure");
+        failed = executionRepository.saveAndFlush(failed);
+
+        mockMvc.perform(get("/api/executions")
+                        .param("page", "0").param("size", "20").param("sort", "newest"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isArray());
+        mockMvc.perform(get("/api/executions")
+                        .param("page", "0").param("size", "20").param("sort", "newest")
+                        .param("search", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isArray());
+
+        JsonNode matching = objectMapper.readTree(mockMvc.perform(get("/api/executions")
+                        .param("page", "0").param("size", "20").param("sort", "newest")
+                        .param("search", marker.toUpperCase()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(3))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(matching.path("content").toString())
+                .contains(first.getId().toString(), second.getId().toString(), failed.getId().toString());
+
+        mockMvc.perform(get("/api/executions")
+                        .param("page", "1").param("size", "1").param("sort", "oldest")
+                        .param("search", marker))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(3))
+                .andExpect(jsonPath("$.number").value(1))
+                .andExpect(jsonPath("$.content.length()").value(1));
+        mockMvc.perform(get("/api/executions")
+                        .param("page", "0").param("size", "20").param("sort", "status")
+                        .param("search", marker).param("status", "FAILED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(failed.getId().toString()));
+    }
+
+    @Test
     void executesSnapshotAndExposesExecutionHistoryNodesAndChronologicalLogs() throws Exception {
         UUID workflowId = createWorkflow();
         String response = mockMvc.perform(post("/api/workflows/{id}/executions", workflowId)
@@ -90,6 +143,13 @@ class ExecutionApiIntegrationTest {
                 .andExpect(jsonPath("$.workflowName").value("Execution Fixture"))
                 .andExpect(jsonPath("$.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.workflowDefinition").doesNotExist());
+
+        mockMvc.perform(get("/api/executions/{id}/graph", executionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nodes[0].id").value("node-trigger"))
+                .andExpect(jsonPath("$.nodes[0].configuration").doesNotExist())
+                .andExpect(jsonPath("$.nodes[1].configuration").doesNotExist())
+                .andExpect(jsonPath("$.connections[0].sourceNodeId").value("node-trigger"));
 
         mockMvc.perform(get("/api/workflows/{id}/executions", workflowId)
                         .param("page", "0").param("size", "10"))

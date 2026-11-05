@@ -5,6 +5,7 @@ import com.flowforge.dto.execution.ExecutionRequest;
 import com.flowforge.dto.execution.ExecutionStartResponse;
 import com.flowforge.dto.execution.NodeExecutionResponse;
 import com.flowforge.dto.execution.ExecutionResponse;
+import com.flowforge.dto.execution.ExecutionGraphResponse;
 import com.flowforge.exception.InvalidExecutionRequestException;
 import com.flowforge.model.execution.ExecutionStatus;
 import com.flowforge.service.ExecutionService;
@@ -94,6 +95,11 @@ public class ExecutionController {
                 search,
                 PageRequest.of(page, size, ordering)
         );
+    }
+
+    @GetMapping("/executions/{executionId}/graph")
+    public ExecutionGraphResponse getExecutionGraph(@PathVariable UUID executionId) {
+        return workflowExecutionService.getExecutionGraph(executionId);
     }
 
     @GetMapping("/executions/{executionId}/nodes")

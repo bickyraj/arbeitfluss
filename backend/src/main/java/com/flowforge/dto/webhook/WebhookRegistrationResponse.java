@@ -1,6 +1,7 @@
 package com.flowforge.dto.webhook;
 
 import com.flowforge.entity.WebhookRegistration;
+import java.time.Instant;
 import com.flowforge.model.webhook.WebhookAuthenticationMode;
 
 public record WebhookRegistrationResponse(
@@ -9,7 +10,9 @@ public record WebhookRegistrationResponse(
         String httpMethod,
         WebhookAuthenticationMode authenticationMode,
         boolean enabled,
-        boolean secretConfigured
+        boolean secretConfigured,
+        Instant createdAt,
+        Instant updatedAt
 ) {
     public static WebhookRegistrationResponse fromEntity(WebhookRegistration registration) {
         return new WebhookRegistrationResponse(
@@ -18,7 +21,9 @@ public record WebhookRegistrationResponse(
                 registration.getHttpMethod(),
                 registration.getAuthenticationMode(),
                 registration.isEnabled(),
-                registration.hasSecret()
+                registration.hasSecret(),
+                registration.getCreatedAt(),
+                registration.getUpdatedAt()
         );
     }
 }

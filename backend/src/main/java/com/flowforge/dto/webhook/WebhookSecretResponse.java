@@ -1,4 +1,4 @@
 package com.flowforge.dto.webhook;
 
-public record WebhookSecretResponse(String secret) {
+public record WebhookSecretResponse(String secret, WebhookRegistrationResponse registration) {
 }

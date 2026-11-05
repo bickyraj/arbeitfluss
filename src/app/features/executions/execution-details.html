@@ -1,0 +1,108 @@
+@if (execution(); as run) {
+  <div class="space-y-5">
+    <nav class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium text-slate-500" aria-label="Execution navigation">
+      <a routerLink="/executions" class="hover:text-indigo-600">← Execution history</a>
+      <a [routerLink]="['/workflows', run.workflowId, 'editor']" class="text-indigo-600 hover:underline">Open current workflow ↗</a>
+      @if (!fullPage()) { <a [routerLink]="['/executions', run.id]" class="text-indigo-600 hover:underline">Open full inspection ↗</a> }
+    </nav>
+    <header class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-[11px] font-semibold uppercase tracking-[.16em] text-slate-400">Execution details</p>
+        <h2 class="mt-2 break-words text-2xl font-semibold tracking-tight text-slate-900">{{ text(run.workflowName) }}</h2>
+        <p class="mt-2 break-all font-mono text-xs text-slate-500">{{ run.id }}</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="state-pill" [attr.data-status]="run.status">{{ run.status }}</span>
+        <button type="button" class="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50" (click)="refresh()">Refresh</button>
+        @if (run.status === 'QUEUED' || run.status === 'RUNNING') {
+          <button type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50" [disabled]="actionBusy()" (click)="cancel(run.id)">{{ actionBusy() ? 'Working…' : 'Cancel' }}</button>
+        }
+        @if (run.status === 'FAILED') {
+          <button type="button" class="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50" [disabled]="actionBusy()" (click)="retry(run.id)">{{ actionBusy() ? 'Retrying…' : 'Retry' }}</button>
+        }
+      </div>
+    </header>
+    <dl class="grid grid-cols-2 gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-4">
+      <div><dt class="summary-label">Trigger</dt><dd class="mt-1 text-sm font-semibold text-slate-800">{{ run.triggerType }}</dd></div>
+      <div><dt class="summary-label">Started</dt><dd class="mt-1 text-xs font-medium text-slate-700">{{ run.startedAt ? (run.startedAt | date: 'medium') : 'Not started' }}</dd></div>
+      <div><dt class="summary-label">Completed</dt><dd class="mt-1 text-xs font-medium text-slate-700">{{ run.completedAt ? (run.completedAt | date: 'medium') : '—' }}</dd></div>
+      <div><dt class="summary-label">{{ active() ? 'Elapsed' : 'Duration' }}</dt><dd class="mt-1 text-sm font-semibold text-slate-800">{{ duration(run) }}</dd></div>
+    </dl>
+    <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+      <span>{{ finishedNodes() }} / {{ nodes().length }} node records finished · Timeout {{ run.timeoutSeconds }}s</span>
+      <span>{{ active() ? '● Live · updates after each 1.5s interval' : 'Persisted execution · live updates stopped' }}</span>
+    </div>
+    @if (run.retryOfExecutionId) { <p class="text-xs text-slate-500">Retry of <a class="break-all font-mono text-indigo-600 hover:underline" [routerLink]="['/executions', run.retryOfExecutionId]">{{ run.retryOfExecutionId }}</a></p> }
+    @if (run.status === 'CANCELLING') { <p class="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">Cancellation requested. Waiting for the active operation to finish or stop. External side effects cannot be undone.</p> }
+    @if (actionError()) { <p role="alert" class="rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{{ actionError() }}</p> }
+    @if (updateWarning()) { <p role="status" class="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">{{ updateWarning() }}</p> }
+    @if (run.errorMessage || run.errorCode) {
+      <div role="alert" class="rounded-xl border border-rose-200 bg-rose-50 p-4">
+        <p class="text-xs font-bold uppercase tracking-wide text-rose-700">Execution error @if (run.errorCode) { · <code>{{ text(run.errorCode) }}</code> }</p>
+        <p class="mt-2 whitespace-pre-wrap break-words text-sm text-rose-800">{{ text(run.errorMessage) || 'No additional error message was recorded.' }}</p>
+      </div>
+    }
+    <div class="inspection-workspace">
+      <section class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Workflow snapshot">
+        @if (graph(); as snapshot) {
+          @if (snapshot.nodes.length) {
+            <app-execution-graph [graph]="snapshot" [records]="nodes()" [logs]="logs()" [selectedId]="selectedId()" (nodeSelected)="selectNode($event)" />
+          } @else { <p class="p-5 text-sm text-slate-500">This execution snapshot has no graph nodes.</p> }
+        } @else {
+          <div class="p-5 text-sm text-slate-500">{{ graphError() ? 'Snapshot visualization is unavailable. Persisted node data is still available below. Refresh to retry.' : 'Loading execution snapshot…' }}</div>
+        }
+        <div class="border-t border-slate-100 px-4 py-3 text-[11px] leading-5 text-slate-400">Saved at execution creation, independent of later workflow edits. Dashed branches indicate inactive flow only when recorded state or a persisted branch decision supports it.</div>
+      </section>
+      <aside class="min-w-0 rounded-2xl border border-slate-200 bg-white" aria-label="Node inspector">
+        <div class="border-b border-slate-200 p-4">
+          <label class="summary-label" for="{{ panelId }}-select">Inspect node</label>
+          <select [id]="panelId + '-select'" class="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800" [value]="selectedId() || ''" (change)="selectNode($any($event.target).value)" [disabled]="!choices().length">
+            @if (!choices().length) { <option value="">No node records yet</option> }
+            @for (node of choices(); track node.id) { <option [value]="node.id">{{ text(node.name) }}</option> }
+          </select>
+        </div>
+        @if (selectedMetadata(); as metadata) {
+          <div class="p-4">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div class="min-w-0"><h3 class="break-words font-semibold text-slate-900">{{ text(metadata.name) }}</h3><p class="mt-1 break-all font-mono text-xs text-slate-500">{{ metadata.type }}</p></div>
+              <span class="state-pill" [attr.data-status]="selected()?.status || 'UNRECORDED'">{{ selected()?.status || 'NO RECORD' }}</span>
+            </div>
+            <p class="mt-2 break-all font-mono text-[10px] text-slate-400">{{ metadata.id }}</p>
+            @if (selected()?.errorMessage) { <p role="alert" class="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{{ text(selected()?.errorMessage) }}</p> }
+          </div>
+          <div class="flex border-y border-slate-200 bg-slate-50 px-2" role="tablist" aria-label="Node inspection views">
+            @for (view of tabs; track view) {
+              <button type="button" role="tab" class="inspector-tab" [class.is-active]="tab() === view" [attr.id]="panelId + '-' + view" [attr.aria-selected]="tab() === view" [attr.aria-controls]="panelId" (click)="tab.set(view)">{{ view === 'logs' ? 'Logs (' + selectedLogs().length + ')' : view }}</button>
+            }
+          </div>
+          <div class="min-w-0 p-4" role="tabpanel" [id]="panelId" [attr.aria-labelledby]="panelId + '-' + tab()">
+            @switch (tab()) {
+              @case ('overview') {
+                <dl class="grid grid-cols-2 gap-4">
+                  <div><dt class="summary-label">Started</dt><dd class="mt-1 text-xs text-slate-700">{{ selected()?.startedAt ? (selected()!.startedAt | date: 'medium') : '—' }}</dd></div>
+                  <div><dt class="summary-label">Finished</dt><dd class="mt-1 text-xs text-slate-700">{{ selected()?.completedAt ? (selected()!.completedAt | date: 'medium') : '—' }}</dd></div>
+                  <div><dt class="summary-label">Node duration</dt><dd class="mt-1 text-sm font-medium text-slate-800">{{ nodeDuration(selected()?.durationMs) }}</dd></div>
+                  <div><dt class="summary-label">Persisted logs</dt><dd class="mt-1 text-sm font-medium text-slate-800">{{ selectedLogs().length }}</dd></div>
+                </dl>
+                @if (httpResponse(); as response) { <p class="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">HTTP status: {{ response.statusCode }} · Response format: {{ response.format }}</p> }
+                <p class="mt-4 text-xs leading-5 text-slate-500">{{ selected()?.status === 'SKIPPED' ? 'This node was not executed. Inspect branch decisions and execution logs for the reason.' : !selected() ? 'No persisted execution record is available for this snapshot node.' : 'Select Input or Output to inspect the actual persisted value. Logs show events associated with this node execution.' }}</p>
+              }
+              @case ('input') { <app-execution-json-view label="Node input" [value]="selected() ? selected()!.inputData : undefined" /> }
+              @case ('output') { <app-execution-json-view label="Node output" [value]="selected() ? selected()!.outputData : undefined" /> }
+              @case ('logs') { <app-execution-log-list [logs]="selectedLogs()" [nodeLabels]="nodeLabels()" /> }
+            }
+          </div>
+        } @else { <p class="p-5 text-sm leading-6 text-slate-500">{{ active() ? 'Waiting for persisted node execution records…' : 'No node execution records were saved for this run.' }}</p> }
+      </aside>
+    </div>
+    <section class="rounded-2xl border border-slate-200 bg-white p-4" aria-label="Execution-level logs">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 class="text-sm font-semibold text-slate-900">Execution logs</h3><span class="text-[11px] text-slate-400">Chronological · all nodes</span></div>
+      <app-execution-log-list [logs]="logs()" [nodeLabels]="nodeLabels()" (nodeSelected)="selectLogNode($event)" />
+    </section>
+    <p class="text-[11px] leading-5 text-slate-400">Persisted data only. Credential-like fields, authorization values and recognizable tokens are redacted in inspection views and clipboard copies.</p>
+  </div>
+} @else if (errorMessage()) {
+  <div role="alert" class="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700"><p>{{ errorMessage() }}</p><button type="button" class="mt-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold" (click)="refresh()">Try again</button></div>
+} @else {
+  <div role="status" class="space-y-3 py-5"><p class="text-sm text-slate-500">Loading execution details…</p><div class="h-16 rounded-xl bg-slate-100"></div><div class="h-48 rounded-xl bg-slate-50"></div></div>
+}

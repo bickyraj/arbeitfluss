@@ -1,6 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { LucideAngularModule, RefreshCw, Search, Activity, CheckCircle2, XCircle, Gauge } from 'lucide-angular';
 import { catchError, EMPTY, merge, Subject, switchMap, timer } from 'rxjs';
@@ -16,7 +16,7 @@ type StatusFilter = 'All' | ExecutionStatus;
 @Component({
   selector: 'app-executions-page',
   standalone: true,
-  imports: [MainLayoutComponent, LucideAngularModule, ExecutionDetailsComponent, DatePipe],
+  imports: [MainLayoutComponent, LucideAngularModule, ExecutionDetailsComponent, DatePipe, RouterLink],
   template: `
     <app-main-layout [title]="'Executions'">
       <div class="space-y-6">
@@ -94,8 +94,8 @@ type StatusFilter = 'All' | ExecutionStatus;
                   @for (execution of executions(); track execution.id) {
                     <tr class="cursor-pointer transition hover:bg-slate-50" [class.bg-indigo-50]="currentExecutionId() === execution.id" (click)="selectExecution(execution.id)">
                       <td class="px-5 py-4">
-                        <p class="font-medium text-slate-900">{{ execution.workflowName }}</p>
-                        <p class="text-xs text-slate-500">{{ execution.id }}</p>
+                        <a class="font-medium text-slate-900 hover:text-indigo-600 hover:underline" [routerLink]="['/executions', execution.id]" (click)="$event.stopPropagation()">{{ execution.workflowName }}</a>
+                        <p class="mt-1 text-xs text-slate-500">{{ execution.id }}</p>
                       </td>
                       <td class="px-5 py-4">
                         <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium"

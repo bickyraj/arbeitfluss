@@ -49,6 +49,7 @@ const NODE_LIBRARY: NodeLibraryItem[] = [
   { id: 'schedule-trigger', name: 'Schedule Trigger', description: 'Runs on a recurring schedule.', category: 'Triggers' },
   { id: 'webhook-trigger', name: 'Webhook Trigger', description: 'Receives payloads from external apps.', category: 'Triggers' },
   { id: 'http-request', name: 'HTTP Request', description: 'Calls an external API endpoint.', category: 'Actions' },
+  { id: 'ai-model', name: 'AI Model', description: 'Generates text with a backend-configured provider.', category: 'Actions' },
   { id: 'send-email', name: 'Send Email', description: 'Dispatches an email to a recipient.', category: 'Actions' },
   { id: 'database-query', name: 'Database Query', description: 'Fetches or updates database records.', category: 'Actions' },
   { id: 'log-message', name: 'Log Message', description: 'Writes an execution log entry.', category: 'Actions' },
@@ -91,6 +92,11 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
         bodyType: 'none',
         body: {}
       }
+    },
+    'ai-model': {
+      name: 'AI Model',
+      description: 'Generates text from workflow data using a backend-configured provider.',
+      config: { provider: 'openai', model: 'gpt-4.1-mini', systemPrompt: '', userPrompt: 'Summarize: {{input}}', temperature: 0.7, maxOutputTokens: 512 }
     },
     'send-email': {
       name: 'Send Email',
@@ -591,6 +597,34 @@ interface HttpKeyValueEntry {
                     }
                   </div>
                 }
+                @case ('ai-model') {
+                  <div class="space-y-3">
+                    <p class="rounded-xl bg-indigo-50 p-3 text-xs leading-5 text-indigo-800">The OpenAI API key is configured on the backend. Do not enter credentials in prompts or workflow settings.</p>
+                    <label class="block text-sm font-medium text-slate-700">Provider
+                      <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" [value]="readConfig(node, 'provider') || 'openai'" (change)="updateSelectedNodeConfig('provider', $event)">
+                        <option value="openai">OpenAI</option>
+                      </select>
+                    </label>
+                    <label class="block text-sm font-medium text-slate-700">Model
+                      <input type="text" maxlength="200" [value]="readConfig(node, 'model')" placeholder="gpt-4.1-mini" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" (input)="updateSelectedNodeConfig('model', $event)" />
+                    </label>
+                    <label class="block text-sm font-medium text-slate-700">System prompt
+                      <textarea rows="4" maxlength="16000" [value]="readConfig(node, 'systemPrompt')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" (input)="updateSelectedNodeConfig('systemPrompt', $event)"></textarea>
+                    </label>
+                    <label class="block text-sm font-medium text-slate-700">User prompt
+                      <textarea rows="6" maxlength="32000" [value]="readConfig(node, 'userPrompt')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" (input)="updateSelectedNodeConfig('userPrompt', $event)"></textarea>
+                    </label>
+                    <p class="text-xs leading-5 text-slate-500">Use <code>{{ '{{input}}' }}</code>, <code>{{ '{{input.field}}' }}</code>, or <code>{{ '{{upstream.node-id.field}}' }}</code> to reference execution data. Missing references fail the node.</p>
+                    <div class="grid grid-cols-2 gap-3">
+                      <label class="block text-sm font-medium text-slate-700">Temperature
+                        <input type="number" min="0" max="2" step="0.1" [value]="readConfig(node, 'temperature')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" (input)="updateAiNumber('temperature', $event)" />
+                      </label>
+                      <label class="block text-sm font-medium text-slate-700">Maximum output tokens
+                        <input type="number" min="1" max="8192" step="1" [value]="readConfig(node, 'maxOutputTokens')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" (input)="updateAiNumber('maxOutputTokens', $event)" />
+                      </label>
+                    </div>
+                  </div>
+                }
                 @case ('send-email') {
                   <div class="space-y-3">
                     <label class="block text-sm font-medium text-slate-700">Recipient<input type="text" [value]="readConfig(node, 'recipient')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('recipient', $event)" /></label>
@@ -884,6 +918,7 @@ export class WorkflowEditorComponent {
       'schedule-trigger': RotateCcw,
       'webhook-trigger': Send,
       'http-request': Download,
+      'ai-model': Zap,
       'send-email': Mail,
       'database-query': Database,
       'log-message': GitCommitHorizontal,
@@ -1161,6 +1196,12 @@ export class WorkflowEditorComponent {
       const number = Number(target.value);
       value = target.value !== '' && Number.isFinite(number) ? number : target.value;
     }
+    this.setSelectedConfigValue(key, value);
+  }
+
+  protected updateAiNumber(key: 'temperature' | 'maxOutputTokens', event: Event): void {
+    const raw = (event.target as HTMLInputElement | null)?.value ?? '';
+    const value = raw.trim() !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
     this.setSelectedConfigValue(key, value);
   }
 
@@ -1725,6 +1766,16 @@ export class WorkflowEditorComponent {
         if (!['none', 'secret-token'].includes(this.readConfig(node, 'authentication') || 'secret-token')) {
           return `Webhook Trigger "${node.name}" has an unsupported authentication mode.`;
         }
+      }
+      if (node.type === 'ai-model') {
+        if (this.readConfig(node, 'provider') !== 'openai') return `AI Model node "${node.name}" has an unsupported provider.`;
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(this.readConfig(node, 'model'))) return `AI Model node "${node.name}" requires a valid model ID.`;
+        if (!this.readConfig(node, 'userPrompt').trim()) return `AI Model node "${node.name}" requires a user prompt.`;
+        if (this.readConfig(node, 'systemPrompt').length > 16000 || this.readConfig(node, 'userPrompt').length > 32000) return `AI Model node "${node.name}" prompt is too long.`;
+        const temperature = node.configuration['temperature'];
+        if (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2) return `AI Model node "${node.name}" requires a temperature between 0 and 2.`;
+        const tokens = node.configuration['maxOutputTokens'];
+        if (typeof tokens !== 'number' || !Number.isInteger(tokens) || tokens < 1 || tokens > 8192) return `AI Model node "${node.name}" requires an output token limit between 1 and 8192.`;
       }
       if (node.type !== 'http-request') continue;
       if (this.httpUrlError(node)) return `HTTP Request node "${node.name}" requires a valid HTTP or HTTPS URL.`;

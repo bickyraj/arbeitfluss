@@ -11,6 +11,7 @@ describe('WorkflowEditor execution flow', () => {
   let executionApi: {
     startExecution: ReturnType<typeof vi.fn>;
     getExecution: ReturnType<typeof vi.fn>;
+    getExecutionGraph: ReturnType<typeof vi.fn>;
     getNodeExecutions: ReturnType<typeof vi.fn>;
     getExecutionLogs: ReturnType<typeof vi.fn>;
   };
@@ -65,6 +66,7 @@ describe('WorkflowEditor execution flow', () => {
         errorMessage: null,
         createdAt: '2026-11-05T00:00:00Z'
       })),
+      getExecutionGraph: vi.fn(() => of({ nodes: [], connections: [] })),
       getNodeExecutions: vi.fn(() => of([])),
       getExecutionLogs: vi.fn(() => of([]))
     };
@@ -127,6 +129,31 @@ describe('WorkflowEditor execution flow', () => {
     expect(root.textContent).toContain('Save this workflow to provision its stable endpoint.');
     expect(root.textContent).toContain('shown only once after generation');
     expect(root.textContent).not.toContain('example.com/webhook');
+  });
+
+  it('configures and saves an AI Model node without a credential field', async () => {
+    const root = fixture.nativeElement as HTMLElement;
+    Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('AI Model'))?.click();
+    fixture.detectChanges();
+    expect(root.textContent).toContain('configured on the backend');
+    const prompt = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('User prompt'))?.querySelector('textarea') as HTMLTextAreaElement;
+    prompt.value = 'Describe {{input.topic}}';
+    prompt.dispatchEvent(new Event('input'));
+    const temperature = Array.from(root.querySelectorAll('aside label'))
+      .find((label) => label.textContent?.includes('Temperature'))?.querySelector('input') as HTMLInputElement;
+    temperature.value = '0.3';
+    temperature.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.trim() === 'Save')?.click();
+    await fixture.whenStable();
+    const api = TestBed.inject(WorkflowApiService) as unknown as { updateWorkflow: ReturnType<typeof vi.fn> };
+    const saved = api.updateWorkflow.mock.calls.at(-1)?.[1] as { definition: { nodes: Array<{ type: string; configuration: Record<string, unknown> }> } };
+    const ai = saved.definition.nodes.find((node) => node.type === 'ai-model');
+    expect(ai?.configuration).toMatchObject({ provider: 'openai', userPrompt: 'Describe {{input.topic}}', temperature: 0.3, maxOutputTokens: 512 });
+    expect(Object.keys(ai?.configuration ?? {})).not.toContain('apiKey');
   });
 
   it('validates edited JSON and starts execution with the saved workflow ID and parsed input', async () => {
