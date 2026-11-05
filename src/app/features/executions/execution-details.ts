@@ -19,6 +19,7 @@ type InspectorTab = 'overview' | 'input' | 'output' | 'logs';
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './execution-details.html',
   styleUrl: './execution-details.css',
+  standalone: true,
   imports: [DatePipe, RouterLink, ExecutionGraphComponent, ExecutionJsonViewComponent, ExecutionLogListComponent]
 })
 export class ExecutionDetailsComponent {

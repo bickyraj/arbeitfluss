@@ -17,7 +17,9 @@ import { AdminAuthService } from '../../core/services/admin-auth.service';
         <div class="flex min-h-screen min-w-0 flex-1 flex-col">
           <div class="flex items-center justify-between border-b border-slate-200 bg-white pr-4">
             <app-topbar class="min-w-0 flex-1" [title]="title()" (toggleSidebar)="toggleSidebar()" />
-            <button type="button" class="rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100" (click)="signOut()">Sign out</button>
+            <button type="button" class="rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                    (click)="signOut()">Sign out
+            </button>
           </div>
 
           <main class="flex-1 p-4 sm:p-6 lg:p-8">
@@ -27,6 +29,7 @@ import { AdminAuthService } from '../../core/services/admin-auth.service';
       </div>
     </div>
   `,
+  standalone: true,
   host: { class: 'block' }
 })
 export class MainLayoutComponent {

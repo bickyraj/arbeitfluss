@@ -1,0 +1,782 @@
+<div
+  class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900"
+  (window:pointermove)="handleGlobalPointerMove($event)"
+  (window:pointerup)="handleGlobalPointerUp($event)"
+>
+  <header class="border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-5">
+    <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+      <div class="flex items-center gap-3">
+        <a routerLink="/workflows"
+           class="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+          <lucide-icon [img]="backIcon" class="h-4 w-4" />
+          Back to Workflows
+        </a>
+        <div class="min-w-0 flex-1">
+          <input
+            type="text"
+            [value]="state().workflowName"
+            class="min-w-0 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-semibold text-slate-900 outline-none focus:border-indigo-400"
+            (input)="updateWorkflowName($event)"
+          />
+          <textarea
+            rows="2"
+            [value]="state().workflowDescription ?? ''"
+            class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 outline-none focus:border-indigo-400"
+            placeholder="Workflow description"
+            (input)="updateWorkflowDescription($event)"
+          ></textarea>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+            <span
+              class="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+              <lucide-icon [img]="statusIcon" class="h-3.5 w-3.5" />
+              {{ saveStateLabel() }}
+            </span>
+        <button type="button"
+                class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                [disabled]="!canUndo()" (click)="undo()">
+          <lucide-icon [img]="undoIcon" class="h-4 w-4" />
+        </button>
+        <button type="button"
+                class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                [disabled]="!canRedo()" (click)="redo()">
+          <lucide-icon [img]="redoIcon" class="h-4 w-4" />
+        </button>
+        <button type="button" aria-label="Zoom out"
+                class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                (click)="zoomOut()">
+          <lucide-icon [img]="zoomOutIcon" class="h-4 w-4" />
+        </button>
+        <button type="button" aria-label="Zoom in"
+                class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                (click)="zoomIn()">
+          <lucide-icon [img]="zoomInIcon" class="h-4 w-4" />
+        </button>
+        <button type="button"
+                class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                (click)="fitCanvas()">
+          Fit canvas
+        </button>
+        @if (saveMessage()) {
+          <span
+            class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                {{ saveMessage() }}
+              </span>
+        }
+        @if (saveError()) {
+          <span
+            class="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700">
+                {{ saveError() }}
+              </span>
+        }
+        <button type="button"
+                class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                [disabled]="isLoading()" (click)="saveState()">
+          {{ isLoading() ? 'Saving...' : 'Save' }}
+        </button>
+        <button type="button"
+                class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800"
+                (click)="openExecutionDialog()">
+          Run / Test
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="flex min-h-0 flex-1 overflow-hidden">
+    <aside class="w-full max-w-[280px] border-r border-slate-200 bg-white p-3 lg:w-[280px]">
+      <div class="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+        <lucide-icon [img]="searchIcon" class="h-4 w-4 text-slate-500" />
+        <input
+          type="search"
+          [value]="nodeSearch()"
+          class="w-full border-0 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
+          placeholder="Search nodes"
+          (input)="updateNodeSearch($event)"
+        />
+      </div>
+
+      <div class="max-h-[calc(100vh-180px)] space-y-5 overflow-y-auto pr-1">
+        @for (category of categories(); track category) {
+          <div>
+            <p
+              class="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{{ category }}</p>
+            <div class="space-y-2">
+              @for (node of nodeLibraryByCategory(category); track node.id; let i = $index) {
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
+                  draggable="true"
+                  (dragstart)="onLibraryDragStart($event, node.id)"
+                  (click)="addNode(node.id, { x: 220, y: 150 + (i * 30) })"
+                >
+                      <span
+                        class="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-indigo-600 shadow-sm">
+                        <lucide-icon [img]="getNodeIcon(node.id)" class="h-4 w-4" />
+                      </span>
+                  <span class="min-w-0 flex-1">
+                        <span class="block text-sm font-medium text-slate-800">{{ node.name }}</span>
+                        <span class="mt-0.5 block truncate text-[11px] text-slate-500">{{ node.description }}</span>
+                      </span>
+                </button>
+              }
+            </div>
+          </div>
+        }
+      </div>
+    </aside>
+
+    <main class="relative flex min-w-0 flex-1 flex-col bg-[#F8FAFC]">
+      <div
+        #workflowCanvas
+        class="relative min-h-[640px] flex-1 overflow-hidden"
+        data-workflow-canvas
+        [style.background-size]="'18px 18px'"
+        [style.background-image]="'radial-gradient(circle, rgba(148, 163, 184, 0.28) 1.2px, transparent 0)'"
+        (dragover)="allowCanvasDrop($event)"
+        (drop)="onCanvasDrop($event)"
+        (pointerdown)="startPanning($event)"
+      >
+        <div
+          class="absolute left-0 top-0 h-full w-full"
+          [style.transform]="'translate(' + panX() + 'px, ' + panY() + 'px) scale(' + zoom() + ')'"
+          [style.transform-origin]="'0 0'"
+        >
+          @if (state().nodes.length === 0) {
+            <div
+              class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-dashed border-slate-300 bg-white/80 px-6 py-5 text-center shadow-sm">
+              <p class="text-lg font-semibold text-slate-900">No nodes on this canvas</p>
+              <p class="mt-2 text-sm text-slate-500">Drag a node from the library or click one to add it.</p>
+            </div>
+          }
+
+          <svg class="absolute inset-0 h-full w-full overflow-visible">
+            <defs>
+              <marker id="connection-arrow-head" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+                <path d="M 0 0 L 10 4 L 0 8 z" fill="currentColor" class="text-indigo-500"></path>
+              </marker>
+            </defs>
+            @for (connection of state().connections; track connection.id) {
+              <path
+                [attr.d]="buildConnectionPath(connection)"
+                class="fill-none stroke-slate-400 stroke-[2.5]"
+                [class.stroke-indigo-500]="selectedConnectionId() === connection.id"
+                [class.stroke-[3.5]]="selectedConnectionId() === connection.id"
+                marker-end="url(#connection-arrow-head)"
+                (click)="selectConnection(connection.id)"
+              ></path>
+            }
+            @if (pendingConnection()) {
+              <path [attr.d]="buildPendingConnectionPath()"
+                    class="fill-none stroke-indigo-500 stroke-[2.5] stroke-dasharray-6"
+                    marker-end="url(#connection-arrow-head)"></path>
+            }
+          </svg>
+
+          @for (node of state().nodes; track node.id) {
+            <div
+              [attr.data-workflow-node-id]="node.id"
+              class="absolute h-[120px] w-[180px] cursor-grab rounded-2xl border bg-white p-3 shadow-[0_14px_28px_rgba(15,23,42,0.08)]"
+              [style.left.px]="node.position.x"
+              [style.top.px]="node.position.y"
+              [class.border-indigo-500]="selectedNodeId() === node.id"
+              [class.border-slate-200]="selectedNodeId() !== node.id"
+              [class.shadow-indigo-100]="selectedNodeId() === node.id"
+              (pointerdown)="startNodeDrag($event, node.id)"
+              (click)="selectNode(node.id)"
+            >
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                      <span class="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+                        <lucide-icon [img]="getNodeIcon(node.type)" class="h-4 w-4" />
+                      </span>
+                  <span class="text-sm font-semibold text-slate-900">{{ node.name }}</span>
+                </div>
+                <span
+                  class="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">{{ node.type }}</span>
+              </div>
+
+              <p class="text-[11px] leading-4 text-slate-500">{{ node.description }}</p>
+              @if (node.type === 'if-condition') {
+                <p class="mt-1 truncate text-[10px] font-medium text-indigo-700">{{ conditionSummary(node) }}</p>
+              }
+
+              <button
+                type="button"
+                class="absolute -left-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white"
+                [attr.data-connection-node-id]="node.id"
+                data-connection-handle="input"
+                [attr.aria-label]="'Connect to ' + node.name"
+                (pointerdown)="stopHandlePointerDown($event)"
+              >
+                <span class="h-2.5 w-2.5 rounded-full border-2 border-slate-400 bg-white"></span>
+              </button>
+              @if (node.type === 'if-condition') {
+                <button
+                  type="button"
+                  class="absolute -right-3 top-1/3 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                  [attr.data-connection-node-id]="node.id"
+                  data-connection-handle="true"
+                  [attr.aria-label]="'Start TRUE connection from ' + node.name"
+                  (pointerdown)="beginConnection($event, node.id)"
+                >
+                  <span class="h-2.5 w-2.5 rounded-full border-2 border-emerald-500 bg-emerald-50"></span>
+                  <span
+                    class="absolute right-6 whitespace-nowrap text-[10px] font-semibold text-emerald-700">TRUE</span>
+                </button>
+                <button
+                  type="button"
+                  class="absolute -right-3 top-2/3 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                  [attr.data-connection-node-id]="node.id"
+                  data-connection-handle="false"
+                  [attr.aria-label]="'Start FALSE connection from ' + node.name"
+                  (pointerdown)="beginConnection($event, node.id)"
+                >
+                  <span class="h-2.5 w-2.5 rounded-full border-2 border-rose-500 bg-rose-50"></span>
+                  <span
+                    class="absolute right-6 whitespace-nowrap text-[10px] font-semibold text-rose-700">FALSE</span>
+                </button>
+              } @else {
+                <button
+                  type="button"
+                  class="absolute -right-3 top-1/2 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                  [attr.data-connection-node-id]="node.id"
+                  data-connection-handle="output"
+                  [attr.aria-label]="'Start connection from ' + node.name"
+                  (pointerdown)="beginConnection($event, node.id)"
+                >
+                  <span class="h-2.5 w-2.5 rounded-full border-2 border-indigo-500 bg-indigo-50"></span>
+                </button>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    </main>
+
+    <aside class="w-full max-w-[320px] border-l border-slate-200 bg-white p-4 lg:w-[320px]">
+      @if (selectedNode(); as node) {
+        <div class="space-y-5">
+          <div>
+            <p class="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Configuration</p>
+            <h3 class="mt-2 text-xl font-semibold text-slate-900">{{ node.name }}</h3>
+          </div>
+
+          <label class="block text-sm font-medium text-slate-700">
+            Node name
+            <input
+              type="text"
+              [value]="node.name"
+              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              (input)="updateSelectedNodeField('name', $event)"
+            />
+          </label>
+
+          <label class="block text-sm font-medium text-slate-700">
+            Description
+            <textarea
+              rows="3"
+              [value]="node.description"
+              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              (input)="updateSelectedNodeField('description', $event)"
+            ></textarea>
+          </label>
+
+          @switch (node.type) {
+            @case ('manual-trigger') {
+              <div class="space-y-3">
+                <label class="block text-sm font-medium text-slate-700">Trigger info<input type="text"
+                                                                                           [value]="readConfig(node, 'triggerInfo')"
+                                                                                           class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                                           (input)="updateSelectedNodeConfig('triggerInfo', $event)" /></label>
+                <label class="block text-sm font-medium text-slate-700">Description<input type="text"
+                                                                                          [value]="readConfig(node, 'description')"
+                                                                                          class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                                          (input)="updateSelectedNodeConfig('description', $event)" /></label>
+              </div>
+            }
+            @case ('webhook-trigger') {
+              <div class="space-y-4">
+                <label class="block text-sm font-medium text-slate-700">HTTP method
+                  <select
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                    [value]="readConfig(node, 'method') || 'POST'"
+                    (change)="updateSelectedNodeConfig('method', $event)">
+                    <option>POST</option>
+                    <option>GET</option>
+                    <option>PUT</option>
+                    <option>PATCH</option>
+                    <option>DELETE</option>
+                  </select>
+                </label>
+                <label class="block text-sm font-medium text-slate-700">Authentication
+                  <select
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                    [value]="readConfig(node, 'authentication') || 'secret-token'"
+                    (change)="updateSelectedNodeConfig('authentication', $event)">
+                    <option value="secret-token">Secret Token</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label class="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" class="rounded border-slate-300 text-indigo-600"
+                         [checked]="readConfig(node, 'active') !== 'false'"
+                         (change)="updateWebhookActive($event)" />
+                  Webhook node enabled
+                </label>
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Endpoint</p>
+                  @if (webhookRegistration(node.id); as registration) {
+                    <p class="mt-2 break-all font-mono text-xs text-slate-700">{{ webhookUrl(registration) }}</p>
+                    <button type="button"
+                            class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            (click)="copyWebhookUrl(registration)">Copy URL
+                    </button>
+                    <p class="mt-3 text-xs font-medium" [class.text-emerald-700]="registration.enabled"
+                       [class.text-amber-700]="!registration.enabled">
+                      {{ webhookStatus(node, registration) }}
+                    </p>
+                  } @else {
+                    <p class="mt-2 text-xs text-slate-600">Save this workflow to provision its stable endpoint.</p>
+                  }
+                </div>
+                @if (readConfig(node, 'authentication') !== 'none') {
+                  <div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                    The secret is stored as a one-way hash and is shown only once after generation. Keep it private;
+                    it is not included in workflow responses.
+                    @if (webhookRegistration(node.id); as registration) {
+                      <button type="button"
+                              class="mt-3 block rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                              [disabled]="!workflowId() || state().isDirty || webhookSecretBusy()"
+                              (click)="generateWebhookSecret(node.id)">
+                        {{ webhookSecretBusy() ? 'Generating…' : registration.secretConfigured ? 'Regenerate Secret' : 'Generate Secret' }}
+                      </button>
+                    }
+                  </div>
+                }
+                @if (webhookSecretReveal()?.nodeId === node.id) {
+                  <div class="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+                    <p class="text-xs font-semibold text-indigo-900">Copy and store this token now. It cannot be
+                      retrieved later.</p>
+                    <code
+                      class="mt-2 block break-all text-xs text-indigo-950">{{ webhookSecretReveal()?.secret }}</code>
+                    <button type="button" class="mt-2 mr-3 text-xs font-semibold text-indigo-700 underline"
+                            (click)="copyWebhookSecret()">Copy secret
+                    </button>
+                    <button type="button" class="mt-2 text-xs font-semibold text-indigo-700 underline"
+                            (click)="dismissWebhookSecret()">Hide secret
+                    </button>
+                  </div>
+                }
+                @if (webhookMessage()) {
+                  <p role="status" class="text-xs text-slate-600">{{ webhookMessage() }}</p>
+                }
+                <div class="rounded-xl border border-slate-200 p-3">
+                  <p class="text-xs font-semibold text-slate-700">Test with curl</p>
+                  <pre
+                    class="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2 text-[11px] text-slate-100">curl -X {{ readConfig(node, 'method') || 'POST' }}
+                    "YOUR_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-FlowForge-Webhook-Secret: YOUR_SECRET" \
+  -d '&#123;"orderId":"order_123","amount":99.99&#125;'</pre>
+                  <p class="mt-2 text-[11px] leading-4 text-slate-500">Requests are acknowledged immediately and
+                    queued for asynchronous execution.</p>
+                </div>
+              </div>
+            }
+            @case ('http-request') {
+              <div class="space-y-4">
+                <label class="block text-sm font-medium text-slate-700">Method
+                  <select
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                    [value]="readConfig(node, 'method')" (change)="updateHttpSetting('method', $event)">
+                    <option>GET</option>
+                    <option>POST</option>
+                    <option>PUT</option>
+                    <option>PATCH</option>
+                    <option>DELETE</option>
+                  </select>
+                </label>
+                <label class="block text-sm font-medium text-slate-700">URL
+                  <input type="url" [value]="readConfig(node, 'url')"
+                         class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                         placeholder="https://api.example.com/resource"
+                         (input)="updateHttpSetting('url', $event)" />
+                </label>
+                @if (httpUrlError(node)) {
+                  <p role="alert" class="text-xs text-rose-700">{{ httpUrlError(node) }}</p>
+                }
+
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="block text-sm font-medium text-slate-700">Response format
+                    <select
+                      class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                      [value]="readConfig(node, 'responseFormat')"
+                      (change)="updateHttpSetting('responseFormat', $event)">
+                      <option value="auto">Auto</option>
+                      <option value="json">JSON</option>
+                      <option value="text">Text</option>
+                    </select>
+                  </label>
+                  <label class="block text-sm font-medium text-slate-700">Timeout (seconds)
+                    <input type="number" min="1" max="3600" step="1" [value]="readConfig(node, 'timeoutSeconds')"
+                           class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                           (input)="updateHttpSetting('timeoutSeconds', $event)" />
+                  </label>
+                </div>
+                @if (httpTimeoutError(node)) {
+                  <p role="alert" class="text-xs text-rose-700">{{ httpTimeoutError(node) }}</p>
+                }
+                <label class="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" [checked]="node.configuration['followRedirects'] === true"
+                         (change)="updateHttpSetting('followRedirects', $event)" />
+                  Follow redirects (each destination is validated)
+                </label>
+
+                <section class="space-y-2 border-t border-slate-100 pt-3">
+                  <div class="flex items-center justify-between">
+                    <h4 class="text-sm font-semibold text-slate-800">Query parameters</h4>
+                    <button type="button" class="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                            (click)="addHttpEntry('queryParameters')">Add parameter
+                    </button>
+                  </div>
+                  @for (parameter of httpEntries(node, 'queryParameters'); track $index; let index = $index) {
+                    <div class="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-2">
+                      <input aria-label="Query parameter name" [value]="parameter.name" placeholder="Name"
+                             class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs"
+                             (input)="updateHttpEntry('queryParameters', index, 'name', $event)" />
+                      <input aria-label="Query parameter value" [value]="parameter.value" placeholder="Value"
+                             class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs"
+                             (input)="updateHttpEntry('queryParameters', index, 'value', $event)" />
+                      <input type="checkbox" aria-label="Enable query parameter" [checked]="parameter.enabled"
+                             (change)="toggleHttpEntry('queryParameters', index, $event)" />
+                      <button type="button" aria-label="Remove query parameter" class="px-1 text-rose-600"
+                              (click)="removeHttpEntry('queryParameters', index)">×
+                      </button>
+                    </div>
+                  }
+                </section>
+
+                <section class="space-y-2 border-t border-slate-100 pt-3">
+                  <div class="flex items-center justify-between">
+                    <h4 class="text-sm font-semibold text-slate-800">Headers</h4>
+                    <button type="button" class="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                            (click)="addHttpEntry('headers')">Add header
+                    </button>
+                  </div>
+                  @for (header of httpEntries(node, 'headers'); track $index; let index = $index) {
+                    <div class="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-2">
+                      <input aria-label="Header name" [value]="header.name" placeholder="Name"
+                             class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs"
+                             (input)="updateHttpEntry('headers', index, 'name', $event)" />
+                      <input aria-label="Header value" [value]="header.value" placeholder="Value"
+                             class="min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-xs"
+                             (input)="updateHttpEntry('headers', index, 'value', $event)" />
+                      <input type="checkbox" aria-label="Enable header" [checked]="header.enabled"
+                             (change)="toggleHttpEntry('headers', index, $event)" />
+                      <button type="button" aria-label="Remove header" class="px-1 text-rose-600"
+                              (click)="removeHttpEntry('headers', index)">×
+                      </button>
+                    </div>
+                  }
+                  <p class="text-xs leading-5 text-amber-700">Header values are stored with this workflow. Avoid
+                    entering long-lived credentials; a credentials manager is not available yet.</p>
+                </section>
+
+                <label class="block text-sm font-medium text-slate-700">Request body
+                  <select
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                    [value]="readConfig(node, 'bodyType') || 'none'"
+                    (change)="updateHttpSetting('bodyType', $event)">
+                    <option value="none">None</option>
+                    <option value="json">JSON</option>
+                  </select>
+                </label>
+                @if (readConfig(node, 'bodyType') === 'json') {
+                  <label class="block text-sm font-medium text-slate-700">JSON body
+                    <textarea rows="7" spellcheck="false" [value]="httpBodyText(node)"
+                              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2.5 font-mono text-xs text-slate-100 outline-none focus:border-indigo-400"
+                              (input)="updateHttpBody($event)"></textarea>
+                  </label>
+                  @if (httpBodyError()) {
+                    <p role="alert" class="text-xs text-rose-700">{{ httpBodyError() }}</p>
+                  }
+                }
+              </div>
+            }
+            @case ('ai-model') {
+              <div class="space-y-3">
+                <p class="rounded-xl bg-indigo-50 p-3 text-xs leading-5 text-indigo-800">The OpenAI API key is
+                  configured on the backend. Do not enter credentials in prompts or workflow settings.</p>
+                <label class="block text-sm font-medium text-slate-700">Provider
+                  <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                          [value]="readConfig(node, 'provider') || 'openai'"
+                          (change)="updateSelectedNodeConfig('provider', $event)">
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </label>
+                <label class="block text-sm font-medium text-slate-700">Model
+                  <input type="text" maxlength="200" [value]="readConfig(node, 'model')" placeholder="gpt-4.1-mini"
+                         class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                         (input)="updateSelectedNodeConfig('model', $event)" />
+                </label>
+                <label class="block text-sm font-medium text-slate-700">System prompt
+                  <textarea rows="4" maxlength="16000" [value]="readConfig(node, 'systemPrompt')"
+                            class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                            (input)="updateSelectedNodeConfig('systemPrompt', $event)"></textarea>
+                </label>
+                <label class="block text-sm font-medium text-slate-700">User prompt
+                  <textarea rows="6" maxlength="32000" [value]="readConfig(node, 'userPrompt')"
+                            class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                            (input)="updateSelectedNodeConfig('userPrompt', $event)"></textarea>
+                </label>
+                <p class="text-xs leading-5 text-slate-500">Use <code>{{ '{{input }}' }
+          }</code>, <code>{{ '{{input.field }}' }}</code>, or <code>{{ '{{upstream.node-id.field }}' }}</code> to
+      reference execution data. Missing references fail the node.</p>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="block text-sm font-medium text-slate-700">Temperature
+          <input type="number" min="0" max="2" step="0.1" [value]="readConfig(node, 'temperature')"
+                 class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                 (input)="updateAiNumber('temperature', $event)" />
+        </label>
+        <label class="block text-sm font-medium text-slate-700">Maximum output tokens
+          <input type="number" min="1" max="8192" step="1" [value]="readConfig(node, 'maxOutputTokens')"
+                 class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                 (input)="updateAiNumber('maxOutputTokens', $event)" />
+        </label>
+      </div>
+  </div>
+  }
+  @case ('send-email') {
+    <div class="space-y-3">
+      <label class="block text-sm font-medium text-slate-700">Recipient<input type="text"
+                                                                              [value]="readConfig(node, 'recipient')"
+                                                                              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                              (input)="updateSelectedNodeConfig('recipient', $event)" /></label>
+      <label class="block text-sm font-medium text-slate-700">Subject<input type="text"
+                                                                            [value]="readConfig(node, 'subject')"
+                                                                            class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                            (input)="updateSelectedNodeConfig('subject', $event)" /></label>
+      <label class="block text-sm font-medium text-slate-700">Message<textarea rows="4"
+                                                                               [value]="readConfig(node, 'message')"
+                                                                               class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                               (input)="updateSelectedNodeConfig('message', $event)"></textarea></label>
+    </div>
+  }
+  @case ('if-condition') {
+    <div class="space-y-3">
+      <p class="rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-800">
+        {{ conditionSummary(node) }}
+      </p>
+      <label class="block text-sm font-medium text-slate-700">Field<input type="text"
+                                                                          [value]="readConfig(node, 'field')"
+                                                                          class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                                                                          (input)="updateSelectedNodeConfig('field', $event)" /></label>
+      <label class="block text-sm font-medium text-slate-700">Operator<select
+        class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+        [value]="readConfig(node, 'operator')"
+        (change)="updateSelectedNodeConfig('operator', $event)">@for (operator of conditionOperators; track operator) {
+        <option [value]="operator">{{ operator }}</option>
+      }</select></label>
+      @if (conditionNeedsValue(node)) {
+        <label class="block text-sm font-medium text-slate-700">Value type
+          <select aria-label="Comparison value type"
+                  class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+                  [value]="conditionValueType(node)" (change)="updateConditionValueType($event)">
+            <option value="string">Text</option>
+            <option value="number">Number</option>
+            <option value="boolean">Boolean</option>
+            <option value="null">Null</option>
+          </select>
+        </label>
+        @switch (conditionValueType(node)) {
+          @case ('number') {
+            <label class="block text-sm font-medium text-slate-700">Comparison Value<input
+              aria-label="Comparison value" type="number" [value]="readConfig(node, 'value')"
+              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              (input)="updateConditionValue($event)" /></label>
+          }
+          @case ('boolean') {
+            <label class="block text-sm font-medium text-slate-700">Comparison Value<select
+              aria-label="Comparison value"
+              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              [value]="readConfig(node, 'value')" (change)="updateConditionValue($event)">
+              <option value="true">True</option>
+              <option value="false">False</option>
+            </select></label>
+          }
+          @case ('null') {
+            <p class="text-xs text-slate-500">The comparison value is JSON null.</p>
+          }
+          @default {
+            <label class="block text-sm font-medium text-slate-700">Comparison Value<input
+              aria-label="Comparison value" type="text" [value]="readConfig(node, 'value')"
+              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              (input)="updateConditionValue($event)" /></label>
+          }
+        }
+      }
+    </div>
+  }
+  @default {
+    <div class="space-y-3">
+      @for (entry of configEntries(node); track entry[0]) {
+        <label class="block text-sm font-medium text-slate-700">
+          {{ entry[0] }}
+          <input
+            type="text"
+            [value]="configValueText(entry[1])"
+            class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400"
+            (input)="updateSelectedNodeConfig(entry[0], $event)"
+          />
+        </label>
+      }
+    </div>
+  }
+  }
+
+  <div class="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+    <div>
+      <p class="text-xs uppercase tracking-[0.12em] text-slate-500">Node actions</p>
+      <p class="mt-1 text-sm text-slate-600">Selected node options</p>
+    </div>
+    <button type="button"
+            class="rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-600 hover:bg-rose-100"
+            (click)="deleteSelectedNode()">
+      Delete
+    </button>
+  </div>
+</div>
+} @else if (selectedConnectionId()) {
+  <div class="space-y-4">
+    <div>
+      <p class="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Connection</p>
+      <h3 class="mt-2 text-xl font-semibold text-slate-900">Selected connection</h3>
+    </div>
+    <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+      This connection links two workflow nodes. Remove it to break the execution path.
+    </div>
+    <button type="button"
+            class="w-full rounded-xl bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-600 hover:bg-rose-100"
+            (click)="deleteSelectedConnection()">
+      Delete connection
+    </button>
+  </div>
+} @else {
+  <div class="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center">
+    <p class="text-lg font-semibold text-slate-900">No selection</p>
+    <p class="mt-2 text-sm text-slate-600">Select a node or path to edit its settings.</p>
+  </div>
+}
+</aside>
+</div>
+
+@if (executionDialogOpen()) {
+  <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4" (click)="closeExecutionDialog()">
+    <section
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="execution-dialog-title"
+      class="mx-auto my-6 max-h-[calc(100vh-3rem)] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:p-6"
+      (click)="$event.stopPropagation()"
+    >
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 id="execution-dialog-title" class="text-xl font-semibold text-slate-900">Run workflow</h2>
+          <p class="mt-1 text-sm text-slate-600">Provide JSON input for the Manual Trigger node.</p>
+        </div>
+        <button type="button" aria-label="Close run dialog"
+                class="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100" [disabled]="isStartingExecution()"
+                (click)="closeExecutionDialog()">✕
+        </button>
+      </div>
+
+      <div class="mt-5">
+        <label for="execution-trigger-input" class="block text-sm font-medium text-slate-700">Trigger input
+          (JSON)</label>
+        <textarea
+          id="execution-trigger-input"
+          rows="8"
+          spellcheck="false"
+          [value]="executionInput()"
+          [disabled]="isStartingExecution() || startedExecutionId() !== null"
+          class="mt-2 w-full resize-y rounded-2xl border border-slate-300 bg-slate-950 px-4 py-3 font-mono text-sm text-slate-100 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:opacity-70"
+          aria-describedby="execution-input-help execution-input-error"
+          (input)="updateExecutionInput($event)"
+        ></textarea>
+        <p id="execution-input-help" class="mt-2 text-xs text-slate-500">The parsed JSON value is sent as <code>triggerInput</code>
+          and becomes the Manual Trigger node's output.</p>
+        @if (executionInputError()) {
+          <p id="execution-input-error" role="alert"
+             class="mt-2 text-sm text-rose-700">{{ executionInputError() }}</p>
+        }
+      </div>
+
+      <div class="mt-4 max-w-xs">
+        <label for="execution-timeout" class="block text-sm font-medium text-slate-700">Execution timeout
+          (seconds)</label>
+        <input
+          id="execution-timeout"
+          type="number"
+          min="1"
+          max="3600"
+          step="1"
+          [value]="executionTimeoutSeconds()"
+          [disabled]="isStartingExecution() || startedExecutionId() !== null"
+          class="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 disabled:opacity-70"
+          (input)="updateExecutionTimeout($event)"
+        />
+        <p class="mt-1 text-xs text-slate-500">Allowed range: 1–3600 seconds. Default: 300.</p>
+        @if (executionTimeoutError()) {
+          <p role="alert" class="mt-1 text-sm text-rose-700">{{ executionTimeoutError() }}</p>
+        }
+      </div>
+
+      @if (!workflowId() || state().isDirty) {
+        <p role="status" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          {{ !workflowId() ? 'Save this workflow before running it.' : 'Save your changes before running. Execution uses the saved workflow graph.' }}
+        </p>
+      }
+      <p class="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+        Executable node types include Manual Trigger, Set Data, Log Message, IF / ELSE, and HTTP Request.
+      </p>
+
+      @if (executionStartError()) {
+        <p role="alert"
+           class="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{{ executionStartError() }}</p>
+      }
+
+      @if (startedExecutionId(); as executionId) {
+        <div class="mt-5 space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-sm font-medium text-slate-700">Execution accepted. Status and node results update while
+              it runs.</p>
+            <a
+              [routerLink]="['/executions']"
+              [queryParams]="{ executionId: executionId }"
+              class="rounded-xl border border-indigo-200 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+            >Open execution details</a>
+          </div>
+          <app-execution-details [executionId]="executionId" (retryStarted)="onExecutionRetryStarted($event)" />
+        </div>
+      } @else {
+        <div class="mt-5 flex flex-wrap justify-end gap-3">
+          <button type="button"
+                  class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  [disabled]="isStartingExecution()" (click)="closeExecutionDialog()">Cancel
+          </button>
+          <button
+            type="button"
+            class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="isStartingExecution() || !!executionInputError() || !!executionTimeoutError() || !workflowId() || state().isDirty || isLoading()"
+            (click)="startWorkflowExecution()"
+          >{{ isStartingExecution() ? 'Starting…' : 'Execute workflow' }}
+          </button>
+        </div>
+      }
+    </section>
+  </div>
+}
+</div>

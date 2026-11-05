@@ -9,34 +9,54 @@ let graphInstance = 0;
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
-      <div><h3 class="text-sm font-semibold text-slate-900">Execution snapshot</h3><p class="mt-1 text-xs text-slate-500">Read-only · Select a node to inspect its persisted data</p></div>
+      <div><h3 class="text-sm font-semibold text-slate-900">Execution snapshot</h3>
+        <p class="mt-1 text-xs text-slate-500">Read-only · Select a node to inspect its persisted data</p></div>
       <div class="flex items-center gap-2 text-xs text-slate-600">
-        <button type="button" aria-label="Zoom out" class="rounded-lg border border-slate-200 px-2 py-1.5" (click)="zoomBy(-0.15)">−</button>
+        <button type="button" aria-label="Zoom out" class="rounded-lg border border-slate-200 px-2 py-1.5"
+                (click)="zoomBy(-0.15)">−
+        </button>
         <span class="w-10 text-center">{{ percent() }}%</span>
-        <button type="button" aria-label="Zoom in" class="rounded-lg border border-slate-200 px-2 py-1.5" (click)="zoomBy(0.15)">+</button>
+        <button type="button" aria-label="Zoom in" class="rounded-lg border border-slate-200 px-2 py-1.5"
+                (click)="zoomBy(0.15)">+
+        </button>
         <button type="button" class="rounded-lg border border-slate-200 px-2 py-1.5" (click)="fit()">Fit graph</button>
       </div>
     </div>
     <div #viewport class="graph-viewport" tabindex="0" aria-label="Read-only workflow execution graph">
       <div [style.width.px]="layout().width * zoom()" [style.height.px]="layout().height * zoom()">
-        <div class="relative origin-top-left" [style.width.px]="layout().width" [style.height.px]="layout().height" [style.transform]="'scale(' + zoom() + ')'">
-          <svg class="pointer-events-none absolute inset-0 overflow-visible" [attr.width]="layout().width" [attr.height]="layout().height" aria-hidden="true">
-            <defs><marker [attr.id]="marker" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8z" fill="context-stroke" /></marker></defs>
+        <div class="relative origin-top-left" [style.width.px]="layout().width" [style.height.px]="layout().height"
+             [style.transform]="'scale(' + zoom() + ')'">
+          <svg class="pointer-events-none absolute inset-0 overflow-visible" [attr.width]="layout().width"
+               [attr.height]="layout().height" aria-hidden="true">
+            <defs>
+              <marker [attr.id]="marker" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                <path d="M0 0 L8 4 L0 8z" fill="context-stroke" />
+              </marker>
+            </defs>
             @for (edge of edges(); track edge.connection.id) {
-              <path [attr.d]="edge.path" fill="none" stroke-width="2.5" [attr.stroke]="edge.state === 'active' ? '#10b981' : edge.state === 'inactive' ? '#cbd5e1' : '#94a3b8'"
-                [attr.stroke-dasharray]="edge.state === 'inactive' ? '6 5' : null" [attr.marker-end]="'url(#' + marker + ')'" [attr.data-flow-state]="edge.state" [attr.data-edge-id]="edge.connection.id" />
+              <path [attr.d]="edge.path" fill="none" stroke-width="2.5"
+                    [attr.stroke]="edge.state === 'active' ? '#10b981' : edge.state === 'inactive' ? '#cbd5e1' : '#94a3b8'"
+                    [attr.stroke-dasharray]="edge.state === 'inactive' ? '6 5' : null"
+                    [attr.marker-end]="'url(#' + marker + ')'" [attr.data-flow-state]="edge.state"
+                    [attr.data-edge-id]="edge.connection.id" />
               @if (edge.label) {
-                <text [attr.x]="edge.labelX" [attr.y]="edge.labelY - 8" fill="#64748b" font-size="10" font-weight="600">{{ edge.label }}</text>
+                <text [attr.x]="edge.labelX" [attr.y]="edge.labelY - 8" fill="#64748b" font-size="10"
+                      font-weight="600">{{ edge.label }}
+                </text>
               }
             }
           </svg>
           @for (node of layout().nodes; track node.id) {
             <button type="button" class="graph-node" [attr.data-status]="record(node.id)?.status || 'UNRECORDED'"
-              [class.is-selected]="selectedId() === node.id" [style.left.px]="node.x" [style.top.px]="node.y"
-              [attr.aria-pressed]="selectedId() === node.id" [attr.aria-label]="text(node.name || node.id) + ', ' + (record(node.id)?.status || 'No execution record')"
-              [attr.data-node-id]="node.id" (click)="nodeSelected.emit(node.id)">
-              <span class="mb-2 flex items-center justify-between gap-2"><span class="node-icon">{{ node.type.includes('trigger') ? '↗' : node.type === 'if-condition' ? '⑂' : '◇' }}</span><span class="node-state">{{ record(node.id)?.status || 'NO RECORD' }}</span></span>
-              <span class="block truncate text-sm font-semibold text-slate-900" [title]="text(node.name || node.id)">{{ text(node.name || node.id) }}</span>
+                    [class.is-selected]="selectedId() === node.id" [style.left.px]="node.x" [style.top.px]="node.y"
+                    [attr.aria-pressed]="selectedId() === node.id"
+                    [attr.aria-label]="text(node.name || node.id) + ', ' + (record(node.id)?.status || 'No execution record')"
+                    [attr.data-node-id]="node.id" (click)="nodeSelected.emit(node.id)">
+              <span class="mb-2 flex items-center justify-between gap-2"><span
+                class="node-icon">{{ node.type.includes('trigger') ? '↗' : node.type === 'if-condition' ? '⑂' : '◇' }}</span><span
+                class="node-state">{{ record(node.id)?.status || 'NO RECORD' }}</span></span>
+              <span class="block truncate text-sm font-semibold text-slate-900"
+                    [title]="text(node.name || node.id)">{{ text(node.name || node.id) }}</span>
               <span class="mt-1 block truncate font-mono text-[10px] text-slate-500">{{ node.type }}</span>
             </button>
           }
@@ -44,20 +64,98 @@ let graphInstance = 0;
       </div>
     </div>
     <div class="flex flex-wrap gap-x-4 gap-y-2 border-t border-slate-200 px-4 py-3 text-[11px] text-slate-500">
-      <span>● Pending</span><span class="text-amber-600">● Running</span><span class="text-emerald-600">● Succeeded / active flow</span><span class="text-rose-600">● Failed</span><span>┄ Skipped / inactive flow</span>
+      <span>● Pending</span><span class="text-amber-600">● Running</span><span class="text-emerald-600">● Succeeded / active flow</span><span
+      class="text-rose-600">● Failed</span><span>┄ Skipped / inactive flow</span>
     </div>
   `,
+  standalone: true,
   styles: [`
-    :host {display:block;min-width:0}
-    .graph-viewport {height:410px;overflow:auto;background-color:#f8fafc;background-image:radial-gradient(#cbd5e1 .8px,transparent .8px);background-size:18px 18px}
-    .graph-node {position:absolute;width:180px;height:120px;padding:12px;text-align:left;background:white;border:1px solid #cbd5e1;border-radius:16px;box-shadow:0 6px 16px #0f172a09}
-    .graph-node:hover {border-color:#818cf8}.graph-node:focus-visible {outline:3px solid #818cf8;outline-offset:3px}
-    .graph-node.is-selected {border:2px solid #6366f1;box-shadow:0 0 0 4px #e0e7ff}
-    .node-icon {display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9px;background:#eef2ff;color:#4f46e5}
-    .node-state {font-size:9px;font-weight:700;color:#64748b;letter-spacing:.03em}
-    [data-status=RUNNING] {border-color:#f59e0b}[data-status=RUNNING] .node-state {color:#b45309}
-    [data-status=SUCCEEDED] .node-state {color:#047857}[data-status=FAILED] {border-color:#fda4af}[data-status=FAILED] .node-state {color:#be123c}
-    [data-status=SKIPPED] {border-style:dashed;background:#f1f5f9}[data-status=SKIPPED] .node-icon {background:#e2e8f0;color:#64748b}
+    :host {
+      display: block;
+      min-width: 0
+    }
+
+    .graph-viewport {
+      height: 410px;
+      overflow: auto;
+      background-color: #f8fafc;
+      background-image: radial-gradient(#cbd5e1 .8px, transparent .8px);
+      background-size: 18px 18px
+    }
+
+    .graph-node {
+      position: absolute;
+      width: 180px;
+      height: 120px;
+      padding: 12px;
+      text-align: left;
+      background: white;
+      border: 1px solid #cbd5e1;
+      border-radius: 16px;
+      box-shadow: 0 6px 16px #0f172a09
+    }
+
+    .graph-node:hover {
+      border-color: #818cf8
+    }
+
+    .graph-node:focus-visible {
+      outline: 3px solid #818cf8;
+      outline-offset: 3px
+    }
+
+    .graph-node.is-selected {
+      border: 2px solid #6366f1;
+      box-shadow: 0 0 0 4px #e0e7ff
+    }
+
+    .node-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      background: #eef2ff;
+      color: #4f46e5
+    }
+
+    .node-state {
+      font-size: 9px;
+      font-weight: 700;
+      color: #64748b;
+      letter-spacing: .03em
+    }
+
+    [data-status=RUNNING] {
+      border-color: #f59e0b
+    }
+
+    [data-status=RUNNING] .node-state {
+      color: #b45309
+    }
+
+    [data-status=SUCCEEDED] .node-state {
+      color: #047857
+    }
+
+    [data-status=FAILED] {
+      border-color: #fda4af
+    }
+
+    [data-status=FAILED] .node-state {
+      color: #be123c
+    }
+
+    [data-status=SKIPPED] {
+      border-style: dashed;
+      background: #f1f5f9
+    }
+
+    [data-status=SKIPPED] .node-icon {
+      background: #e2e8f0;
+      color: #64748b
+    }
   `]
 })
 export class ExecutionGraphComponent {

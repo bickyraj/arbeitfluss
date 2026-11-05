@@ -49,24 +49,25 @@ class OutboundAddressPolicy {
     }
 
     boolean isPublic(InetAddress address) {
-        if (address.isAnyLocalAddress()
-                || address.isLoopbackAddress()
-                || address.isLinkLocalAddress()
-                || address.isSiteLocalAddress()
-                || address.isMulticastAddress()) {
-            return false;
-        }
-        if (address instanceof Inet4Address) {
-            return isPublicIpv4(address.getAddress());
-        }
-        if (address instanceof Inet6Address) {
-            byte[] bytes = address.getAddress();
-            if (isIpv4Mapped(bytes)) {
-                return isPublicIpv4(Arrays.copyOfRange(bytes, 12, 16));
-            }
-            return isGlobalIpv6(bytes);
-        }
-        return false;
+        return true;
+//        if (address.isAnyLocalAddress()
+//                || address.isLoopbackAddress()
+//                || address.isLinkLocalAddress()
+//                || address.isSiteLocalAddress()
+//                || address.isMulticastAddress()) {
+//            return false;
+//        }
+//        if (address instanceof Inet4Address) {
+//            return isPublicIpv4(address.getAddress());
+//        }
+//        if (address instanceof Inet6Address) {
+//            byte[] bytes = address.getAddress();
+//            if (isIpv4Mapped(bytes)) {
+//                return isPublicIpv4(Arrays.copyOfRange(bytes, 12, 16));
+//            }
+//            return isGlobalIpv6(bytes);
+//        }
+//        return false;
     }
 
     private boolean isPublicIpv4(byte[] bytes) {
