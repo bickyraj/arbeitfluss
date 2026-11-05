@@ -15,7 +15,20 @@ export type WorkflowNodeType =
 
 export type WorkflowNodeCategory = 'Triggers' | 'Actions' | 'Logic' | 'Data';
 
-export type WorkflowNodeConfiguration = Record<string, string | number | boolean | undefined>;
+export type WorkflowScalarValue = string | number | boolean | null;
+export type WorkflowNodeConfiguration = Record<string, WorkflowScalarValue | undefined>;
+
+export type ConditionalOperator =
+  | 'equals'
+  | 'not equals'
+  | 'greater than'
+  | 'greater than or equal'
+  | 'less than'
+  | 'less than or equal'
+  | 'is empty'
+  | 'is not empty';
+
+export type ConditionalOutputHandle = 'true' | 'false';
 
 export interface WorkflowNode {
   id: string;

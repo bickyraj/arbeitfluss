@@ -44,9 +44,8 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
   };
 };
 
-const buildTemplateState = (name: string, nodeLayout: Array<{ type: WorkflowNodeType; x: number; y: number; id: string }>, connections: Array<{ id: string; sourceNodeId: string; targetNodeId: string }>): WorkflowEditorState => {
+const buildTemplateState = (name: string, nodeLayout: Array<{ type: WorkflowNodeType; x: number; y: number; id: string }>, connections: Array<{ id: string; sourceNodeId: string; targetNodeId: string; sourceHandle?: string }>): WorkflowEditorState => {
   const nodes = nodeLayout.map((node) => makeNode(node.id, node.type, node.x, node.y));
-  const nodeMap = new Map(nodeLayout.map((node) => [node.id, node.id]));
 
   return {
     workflowId: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-template`,
@@ -55,7 +54,7 @@ const buildTemplateState = (name: string, nodeLayout: Array<{ type: WorkflowNode
     connections: connections.map((connection) => ({
       id: connection.id,
       sourceNodeId: connection.sourceNodeId,
-      sourceHandle: 'output',
+      sourceHandle: connection.sourceHandle ?? 'output',
       targetNodeId: connection.targetNodeId,
       targetHandle: 'input'
     } as WorkflowConnection)),
@@ -81,8 +80,8 @@ const templateSeed: TemplateEntry[] = [
       { id: 'log-ready', type: 'log-message', x: 720, y: 280 }
     ], [
       { id: 'conn-1', sourceNodeId: 'trigger', targetNodeId: 'if-ready' },
-      { id: 'conn-2', sourceNodeId: 'if-ready', targetNodeId: 'send-email' },
-      { id: 'conn-3', sourceNodeId: 'if-ready', targetNodeId: 'log-ready' }
+      { id: 'conn-2', sourceNodeId: 'if-ready', sourceHandle: 'true', targetNodeId: 'send-email' },
+      { id: 'conn-3', sourceNodeId: 'if-ready', sourceHandle: 'false', targetNodeId: 'log-ready' }
     ])
   },
   {
@@ -100,8 +99,8 @@ const templateSeed: TemplateEntry[] = [
       { id: 'notify', type: 'send-email', x: 700, y: 260 }
     ], [
       { id: 'conn-1', sourceNodeId: 'inbound', targetNodeId: 'classify' },
-      { id: 'conn-2', sourceNodeId: 'classify', targetNodeId: 'assign' },
-      { id: 'conn-3', sourceNodeId: 'classify', targetNodeId: 'notify' }
+      { id: 'conn-2', sourceNodeId: 'classify', sourceHandle: 'true', targetNodeId: 'assign' },
+      { id: 'conn-3', sourceNodeId: 'classify', sourceHandle: 'false', targetNodeId: 'notify' }
     ])
   },
   {
@@ -140,8 +139,8 @@ const templateSeed: TemplateEntry[] = [
     ], [
       { id: 'conn-1', sourceNodeId: 'schedule', targetNodeId: 'check' },
       { id: 'conn-2', sourceNodeId: 'check', targetNodeId: 'branch' },
-      { id: 'conn-3', sourceNodeId: 'branch', targetNodeId: 'alert' },
-      { id: 'conn-4', sourceNodeId: 'branch', targetNodeId: 'log' }
+      { id: 'conn-3', sourceNodeId: 'branch', sourceHandle: 'true', targetNodeId: 'alert' },
+      { id: 'conn-4', sourceNodeId: 'branch', sourceHandle: 'false', targetNodeId: 'log' }
     ])
   },
   {
@@ -178,8 +177,8 @@ const templateSeed: TemplateEntry[] = [
       { id: 'log', type: 'log-message', x: 740, y: 260 }
     ], [
       { id: 'conn-1', sourceNodeId: 'lead', targetNodeId: 'score' },
-      { id: 'conn-2', sourceNodeId: 'score', targetNodeId: 'email' },
-      { id: 'conn-3', sourceNodeId: 'score', targetNodeId: 'log' }
+      { id: 'conn-2', sourceNodeId: 'score', sourceHandle: 'true', targetNodeId: 'email' },
+      { id: 'conn-3', sourceNodeId: 'score', sourceHandle: 'false', targetNodeId: 'log' }
     ])
   }
 ];

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowforge.exception.InvalidExecutionRequestException;
 import com.flowforge.executor.LogMessageExecutor;
 import com.flowforge.executor.ManualTriggerExecutor;
+import com.flowforge.executor.IfConditionExecutor;
 import com.flowforge.executor.NodeExecutorRegistry;
 import com.flowforge.executor.SetDataExecutor;
 import com.flowforge.runtime.WorkflowGraphPlan;
@@ -20,7 +21,8 @@ class WorkflowGraphValidatorTest {
     private final WorkflowGraphValidator validator = new WorkflowGraphValidator(new NodeExecutorRegistry(List.of(
             new ManualTriggerExecutor(),
             new SetDataExecutor(),
-            new LogMessageExecutor()
+            new LogMessageExecutor(),
+            new IfConditionExecutor()
     )));
 
     @Test
@@ -94,12 +96,15 @@ class WorkflowGraphValidatorTest {
                 {"nodes":[{"id":"trigger","type":"manual-trigger"},{"id":"unknown","type":"http-request"}],"connections":[
                   {"id":"edge","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"unknown","targetHandle":"input"}]}
                 """, "unsupported type 'http-request'");
-        assertInvalid("""
+        JsonNode multiInputDefinition = objectMapper.readTree("""
                 {"nodes":[{"id":"trigger","type":"manual-trigger"},{"id":"join","type":"set-data"},{"id":"other","type":"set-data"}],
                  "connections":[
                    {"id":"edge-1","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
-                   {"id":"edge-2","sourceNodeId":"other","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"}]}
-                """, "multiple incoming connections");
+                   {"id":"edge-2","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"other","targetHandle":"input"},
+                   {"id":"edge-3","sourceNodeId":"other","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"}]}
+                """);
+        assertThat(validator.validate(multiInputDefinition).incomingConnections().get("join"))
+                .hasSize(2);
     }
 
     @Test
@@ -111,6 +116,50 @@ class WorkflowGraphValidatorTest {
                 {"nodes":[{"id":"trigger","type":"manual-trigger"},{"id":"next","type":"set-data"}],
                  "connections":[{"id":"edge","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"next","targetHandle":"in"}]}
                 """, "unsupported target handle 'in'");
+    }
+
+    @Test
+    void acceptsConditionalBranchesAndNormalizesOnlyLegacyConditionalHandles() throws Exception {
+        JsonNode legacyDefinition = objectMapper.readTree("""
+                {"nodes":[
+                  {"id":"trigger","type":"manual-trigger"},
+                  {"id":"condition","type":"if-condition","configuration":{"field":"active","operator":"equals","value":true}},
+                  {"id":"yes","type":"log-message","configuration":{"message":"yes"}},
+                  {"id":"no","type":"log-message","configuration":{"message":"no"}}
+                ],
+                "connections":[
+                  {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                  {"id":"legacy-yes","sourceNodeId":"condition","sourceHandle":"output","targetNodeId":"yes","targetHandle":"input"},
+                  {"id":"legacy-no","sourceNodeId":"condition","sourceHandle":"output-2","targetNodeId":"no","targetHandle":"input"}
+                ]}
+                """);
+        WorkflowGraphPlan graph = validator.validate(legacyDefinition);
+        assertThat(graph.outgoingConnections().get("condition"))
+                .extracting(WorkflowGraphPlan.Connection::sourceHandle)
+                .containsExactly("true", "false");
+        assertThat(legacyDefinition.path("connections").get(1).path("sourceHandle").asText())
+                .isEqualTo("output");
+        assertInvalid("""
+                {"nodes":[{"id":"trigger","type":"manual-trigger"},
+                  {"id":"condition","type":"if-condition","configuration":{"field":"status","operator":"equals","value":"active"}},
+                  {"id":"yes","type":"log-message"}],
+                 "connections":[
+                   {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                   {"id":"yes-edge","sourceNodeId":"condition","sourceHandle":"true","targetNodeId":"yes","targetHandle":"input"}]}
+                """, "missing outgoing branch connection(s): false");
+        assertInvalid("""
+                {"nodes":[{"id":"trigger","type":"manual-trigger"},{"id":"next","type":"set-data"}],
+                 "connections":[{"id":"bad","sourceNodeId":"trigger","sourceHandle":"output-2","targetNodeId":"next","targetHandle":"input"}]}
+                """, "unsupported source handle 'output-2'");
+        assertInvalid("""
+                {"nodes":[{"id":"trigger","type":"manual-trigger"},
+                  {"id":"condition","type":"if-condition","configuration":{"field":"age","operator":"greater than","value":true}},
+                  {"id":"yes","type":"log-message"},{"id":"no","type":"log-message"}],
+                 "connections":[
+                   {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                   {"id":"yes","sourceNodeId":"condition","sourceHandle":"true","targetNodeId":"yes","targetHandle":"input"},
+                   {"id":"no","sourceNodeId":"condition","sourceHandle":"false","targetNodeId":"no","targetHandle":"input"}]}
+                """, "Ordering comparisons require a number or text value");
     }
 
     private void assertInvalid(String json, String message) throws Exception {

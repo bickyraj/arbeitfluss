@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ExecutionApiService } from '../../../core/services/execution-api.service';
@@ -30,10 +30,12 @@ import {
 import { WorkflowApiService } from '../../../core/services/workflow-api.service';
 import type {
   NodeLibraryItem,
+  ConditionalOperator,
   WorkflowConnection,
   WorkflowEditorState,
   WorkflowNode,
   WorkflowNodeConfiguration,
+  WorkflowScalarValue,
   WorkflowNodeType
 } from '../../../core/models/workflow-editor.model';
 
@@ -45,7 +47,7 @@ const NODE_LIBRARY: NodeLibraryItem[] = [
   { id: 'send-email', name: 'Send Email', description: 'Dispatches an email to a recipient.', category: 'Actions' },
   { id: 'database-query', name: 'Database Query', description: 'Fetches or updates database records.', category: 'Actions' },
   { id: 'log-message', name: 'Log Message', description: 'Writes an execution log entry.', category: 'Actions' },
-  { id: 'if-condition', name: 'IF Condition', description: 'Branches logic based on a condition.', category: 'Logic' },
+  { id: 'if-condition', name: 'IF / ELSE', description: 'Branches logic based on a condition.', category: 'Logic' },
   { id: 'switch', name: 'Switch', description: 'Routes based on multiple values.', category: 'Logic' },
   { id: 'merge', name: 'Merge', description: 'Combines multiple branches.', category: 'Logic' },
   { id: 'set-data', name: 'Set Data', description: 'Creates or updates workflow variables.', category: 'Data' },
@@ -91,7 +93,7 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
       config: { message: 'Workflow step completed successfully.' }
     },
     'if-condition': {
-      name: 'IF Condition',
+      name: 'IF / ELSE',
       description: 'Branches when a condition is true.',
       config: { field: 'status', operator: 'equals', value: 'active' }
     },
@@ -144,8 +146,8 @@ const createInitialState = (): WorkflowEditorState => ({
   ],
   connections: [
     { id: 'conn-1', sourceNodeId: 'node-1', sourceHandle: 'output', targetNodeId: 'node-2', targetHandle: 'input' },
-    { id: 'conn-2', sourceNodeId: 'node-2', sourceHandle: 'output', targetNodeId: 'node-3', targetHandle: 'input' },
-    { id: 'conn-3', sourceNodeId: 'node-2', sourceHandle: 'output-2', targetNodeId: 'node-4', targetHandle: 'input' }
+    { id: 'conn-2', sourceNodeId: 'node-2', sourceHandle: 'true', targetNodeId: 'node-3', targetHandle: 'input' },
+    { id: 'conn-3', sourceNodeId: 'node-2', sourceHandle: 'false', targetNodeId: 'node-4', targetHandle: 'input' }
   ],
   selectedNodeId: 'node-1',
   selectedConnectionId: null,
@@ -153,13 +155,27 @@ const createInitialState = (): WorkflowEditorState => ({
 });
 
 const CLAMP = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
+const CONDITION_OPERATORS: ConditionalOperator[] = [
+  'equals',
+  'not equals',
+  'greater than',
+  'greater than or equal',
+  'less than',
+  'less than or equal',
+  'is empty',
+  'is not empty'
+];
 
 @Component({
   selector: 'app-workflow-editor',
   standalone: true,
   imports: [LucideAngularModule, RouterLink, ExecutionDetailsComponent],
   template: `
-    <div class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900" (window:pointerup)="handleGlobalPointerUp($event)">
+    <div
+      class="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900"
+      (window:pointermove)="handleGlobalPointerMove($event)"
+      (window:pointerup)="handleGlobalPointerUp($event)"
+    >
       <header class="border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-5">
         <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div class="flex items-center gap-3">
@@ -195,10 +211,10 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
             <button type="button" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" [disabled]="!canRedo()" (click)="redo()">
               <lucide-icon [img]="redoIcon" class="h-4 w-4" />
             </button>
-            <button type="button" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="zoomOut()">
+            <button type="button" aria-label="Zoom out" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="zoomOut()">
               <lucide-icon [img]="zoomOutIcon" class="h-4 w-4" />
             </button>
-            <button type="button" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="zoomIn()">
+            <button type="button" aria-label="Zoom in" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="zoomIn()">
               <lucide-icon [img]="zoomInIcon" class="h-4 w-4" />
             </button>
             <button type="button" class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" (click)="fitCanvas()">
@@ -267,14 +283,14 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 
         <main class="relative flex min-w-0 flex-1 flex-col bg-[#F8FAFC]">
           <div
+            #workflowCanvas
             class="relative min-h-[640px] flex-1 overflow-hidden"
             data-workflow-canvas
             [style.background-size]="'18px 18px'"
             [style.background-image]="'radial-gradient(circle, rgba(148, 163, 184, 0.28) 1.2px, transparent 0)'"
             (dragover)="allowCanvasDrop($event)"
             (drop)="onCanvasDrop($event)"
-            (pointermove)="handleCanvasPointerMove($event)"
-            (mousedown)="startPanning($event)"
+            (pointerdown)="startPanning($event)"
           >
             <div
               class="absolute left-0 top-0 h-full w-full"
@@ -311,6 +327,7 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
 
               @for (node of state().nodes; track node.id) {
                 <div
+                  [attr.data-workflow-node-id]="node.id"
                   class="absolute h-[120px] w-[180px] cursor-grab rounded-2xl border bg-white p-3 shadow-[0_14px_28px_rgba(15,23,42,0.08)]"
                   [style.left.px]="node.position.x"
                   [style.top.px]="node.position.y"
@@ -331,6 +348,9 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
                   </div>
 
                   <p class="text-[11px] leading-4 text-slate-500">{{ node.description }}</p>
+                  @if (node.type === 'if-condition') {
+                    <p class="mt-1 truncate text-[10px] font-medium text-indigo-700">{{ conditionSummary(node) }}</p>
+                  }
 
                   <button
                     type="button"
@@ -342,16 +362,41 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
                   >
                     <span class="h-2.5 w-2.5 rounded-full border-2 border-slate-400 bg-white"></span>
                   </button>
-                  <button
-                    type="button"
-                    class="absolute -right-3 top-1/2 flex h-6 w-6 items-center justify-center rounded-full bg-white"
-                    [attr.data-connection-node-id]="node.id"
-                    data-connection-handle="output"
-                    [attr.aria-label]="'Start connection from ' + node.name"
-                    (pointerdown)="beginConnection($event, node.id)"
-                  >
-                    <span class="h-2.5 w-2.5 rounded-full border-2 border-indigo-500 bg-indigo-50"></span>
-                  </button>
+                  @if (node.type === 'if-condition') {
+                    <button
+                      type="button"
+                      class="absolute -right-3 top-1/3 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                      [attr.data-connection-node-id]="node.id"
+                      data-connection-handle="true"
+                      [attr.aria-label]="'Start TRUE connection from ' + node.name"
+                      (pointerdown)="beginConnection($event, node.id)"
+                    >
+                      <span class="h-2.5 w-2.5 rounded-full border-2 border-emerald-500 bg-emerald-50"></span>
+                      <span class="absolute right-6 whitespace-nowrap text-[10px] font-semibold text-emerald-700">TRUE</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="absolute -right-3 top-2/3 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                      [attr.data-connection-node-id]="node.id"
+                      data-connection-handle="false"
+                      [attr.aria-label]="'Start FALSE connection from ' + node.name"
+                      (pointerdown)="beginConnection($event, node.id)"
+                    >
+                      <span class="h-2.5 w-2.5 rounded-full border-2 border-rose-500 bg-rose-50"></span>
+                      <span class="absolute right-6 whitespace-nowrap text-[10px] font-semibold text-rose-700">FALSE</span>
+                    </button>
+                  } @else {
+                    <button
+                      type="button"
+                      class="absolute -right-3 top-1/2 flex h-6 w-6 items-center justify-center rounded-full bg-white"
+                      [attr.data-connection-node-id]="node.id"
+                      data-connection-handle="output"
+                      [attr.aria-label]="'Start connection from ' + node.name"
+                      (pointerdown)="beginConnection($event, node.id)"
+                    >
+                      <span class="h-2.5 w-2.5 rounded-full border-2 border-indigo-500 bg-indigo-50"></span>
+                    </button>
+                  }
                 </div>
               }
             </div>
@@ -410,9 +455,35 @@ const CLAMP = (value: number, min: number, max: number): number => Math.min(Math
                 }
                 @case ('if-condition') {
                   <div class="space-y-3">
+                    <p class="rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-800">
+                      {{ conditionSummary(node) }}
+                    </p>
                     <label class="block text-sm font-medium text-slate-700">Field<input type="text" [value]="readConfig(node, 'field')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('field', $event)" /></label>
-                    <label class="block text-sm font-medium text-slate-700">Operator<select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'operator')" (change)="updateSelectedNodeConfig('operator', $event)"><option>equals</option><option>not equals</option><option>greater than</option><option>less than</option></select></label>
-                    <label class="block text-sm font-medium text-slate-700">Comparison Value<input type="text" [value]="readConfig(node, 'value')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('value', $event)" /></label>
+                    <label class="block text-sm font-medium text-slate-700">Operator<select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'operator')" (change)="updateSelectedNodeConfig('operator', $event)">@for (operator of conditionOperators; track operator) { <option [value]="operator">{{ operator }}</option> }</select></label>
+                    @if (conditionNeedsValue(node)) {
+                      <label class="block text-sm font-medium text-slate-700">Value type
+                        <select aria-label="Comparison value type" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="conditionValueType(node)" (change)="updateConditionValueType($event)">
+                          <option value="string">Text</option>
+                          <option value="number">Number</option>
+                          <option value="boolean">Boolean</option>
+                          <option value="null">Null</option>
+                        </select>
+                      </label>
+                      @switch (conditionValueType(node)) {
+                        @case ('number') {
+                          <label class="block text-sm font-medium text-slate-700">Comparison Value<input aria-label="Comparison value" type="number" [value]="readConfig(node, 'value')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateConditionValue($event)" /></label>
+                        }
+                        @case ('boolean') {
+                          <label class="block text-sm font-medium text-slate-700">Comparison Value<select aria-label="Comparison value" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'value')" (change)="updateConditionValue($event)"><option value="true">True</option><option value="false">False</option></select></label>
+                        }
+                        @case ('null') {
+                          <p class="text-xs text-slate-500">The comparison value is JSON null.</p>
+                        }
+                        @default {
+                          <label class="block text-sm font-medium text-slate-700">Comparison Value<input aria-label="Comparison value" type="text" [value]="readConfig(node, 'value')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateConditionValue($event)" /></label>
+                        }
+                      }
+                    }
                   </div>
                 }
                 @default {
@@ -546,6 +617,7 @@ export class WorkflowEditorComponent {
   protected readonly route = inject(ActivatedRoute);
   protected readonly workflowApi = inject(WorkflowApiService);
   protected readonly executionApi = inject(ExecutionApiService);
+  private readonly workflowCanvas = viewChild.required<ElementRef<HTMLElement>>('workflowCanvas');
   protected readonly storageKey = 'flowforge-workflow-states';
   protected readonly history = signal<WorkflowEditorState[]>([]);
   protected readonly historyIndex = signal(0);
@@ -586,6 +658,15 @@ export class WorkflowEditorComponent {
   protected readonly panning = signal(false);
   protected readonly lastPointer = signal({ x: 0, y: 0 });
 
+  private pointerToCanvas(event: PointerEvent): { x: number; y: number } {
+    const canvas = this.workflowCanvas().nativeElement;
+    const bounds = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - bounds.left + canvas.scrollLeft - this.panX()) / this.zoom(),
+      y: (event.clientY - bounds.top + canvas.scrollTop - this.panY()) / this.zoom()
+    };
+  }
+
   protected readonly backIcon = ArrowLeft;
   protected readonly searchIcon = Search;
   protected readonly statusIcon = CheckCircle2;
@@ -614,6 +695,7 @@ export class WorkflowEditorComponent {
   protected readonly canUndo = computed(() => this.historyIndex() > 0);
   protected readonly canRedo = computed(() => this.historyIndex() < this.history().length - 1);
   protected readonly saveStateLabel = computed(() => (this.state().isDirty ? 'Unsaved changes' : 'Saved'));
+  protected readonly conditionOperators = CONDITION_OPERATORS;
 
   protected nodeLibraryByCategory(category: string): NodeLibraryItem[] {
     return this.filteredLibrary().filter((item) => item.category === category);
@@ -650,8 +732,9 @@ export class WorkflowEditorComponent {
     }
 
     const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = (event.clientX - bounds.left - this.panX()) / this.zoom();
-    const y = (event.clientY - bounds.top - this.panY()) / this.zoom();
+    const canvas = event.currentTarget as HTMLElement;
+    const x = (event.clientX - bounds.left + canvas.scrollLeft - this.panX()) / this.zoom();
+    const y = (event.clientY - bounds.top + canvas.scrollTop - this.panY()) / this.zoom();
     this.addNode(nodeType, { x: Math.max(0, x), y: Math.max(0, y) });
   }
 
@@ -727,12 +810,74 @@ export class WorkflowEditorComponent {
     return configValue === undefined ? '' : String(configValue);
   }
 
-  protected configEntries(node: WorkflowNode): Array<[string, string | number | boolean | undefined]> {
-    return Object.entries(node.configuration) as Array<[string, string | number | boolean | undefined]>;
+  protected configEntries(node: WorkflowNode): Array<[string, WorkflowScalarValue | undefined]> {
+    return Object.entries(node.configuration) as Array<[string, WorkflowScalarValue | undefined]>;
   }
 
-  protected configValueText(value: string | number | boolean | undefined): string {
+  protected configValueText(value: WorkflowScalarValue | undefined): string {
     return String(value ?? '');
+  }
+
+  protected conditionValueType(node: WorkflowNode): 'string' | 'number' | 'boolean' | 'null' {
+    const value = node.configuration['value'];
+    if (value === null) return 'null';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    return 'string';
+  }
+
+  protected conditionNeedsValue(node: WorkflowNode): boolean {
+    const operator = node.configuration['operator'];
+    return operator !== 'is empty' && operator !== 'is not empty';
+  }
+
+  protected conditionSummary(node: WorkflowNode): string {
+    const field = this.readConfig(node, 'field') || 'Choose a field';
+    const operator = this.readConfig(node, 'operator') || 'Choose an operator';
+    if (!this.conditionNeedsValue(node)) {
+      return `${field} ${operator}`;
+    }
+    return `${field} ${operator} ${this.readConfig(node, 'value') || '…'}`;
+  }
+
+  protected updateConditionValueType(event: Event): void {
+    const target = event.target as HTMLSelectElement | null;
+    const value = target?.value;
+    const typedValue: WorkflowScalarValue = value === 'null'
+      ? null
+      : value === 'number'
+        ? 0
+        : value === 'boolean'
+          ? false
+          : '';
+    this.setSelectedConfigValue('value', typedValue);
+  }
+
+  protected updateConditionValue(event: Event): void {
+    const target = event.target as HTMLInputElement | HTMLSelectElement | null;
+    if (!target) return;
+    const type = this.selectedNode() ? this.conditionValueType(this.selectedNode()!) : 'string';
+    const parsedNumber = target.value === '' ? null : Number(target.value);
+    const value: WorkflowScalarValue = type === 'number'
+      ? (parsedNumber !== null && Number.isFinite(parsedNumber) ? parsedNumber : null)
+      : type === 'boolean'
+        ? target.value === 'true'
+        : target.value;
+    this.setSelectedConfigValue('value', value);
+  }
+
+  private setSelectedConfigValue(key: string, value: WorkflowScalarValue): void {
+    const selectedId = this.selectedNodeId();
+    if (!selectedId) return;
+    this.pushState({
+      ...this.state(),
+      nodes: this.state().nodes.map((node) =>
+        node.id === selectedId
+          ? { ...node, configuration: { ...node.configuration, [key]: value } }
+          : node
+      ),
+      isDirty: true
+    });
   }
 
   protected addNode(nodeType: WorkflowNodeType, position: { x: number; y: number }): void {
@@ -770,8 +915,12 @@ export class WorkflowEditorComponent {
     const canvas = handle.closest<HTMLElement>('[data-workflow-canvas]');
     const canvasRect = canvas?.getBoundingClientRect();
     const handleRect = handle.getBoundingClientRect();
-    const x = canvasRect ? (handleRect.left + handleRect.width / 2 - canvasRect.left - this.panX()) / this.zoom() : 0;
-    const y = canvasRect ? (handleRect.top + handleRect.height / 2 - canvasRect.top - this.panY()) / this.zoom() : 0;
+    const x = canvasRect && canvas
+      ? (handleRect.left + handleRect.width / 2 - canvasRect.left + canvas.scrollLeft - this.panX()) / this.zoom()
+      : 0;
+    const y = canvasRect && canvas
+      ? (handleRect.top + handleRect.height / 2 - canvasRect.top + canvas.scrollTop - this.panY()) / this.zoom()
+      : 0;
     this.pendingConnection.set({
       sourceNodeId: nodeId,
       sourceHandle: handle.dataset['connectionHandle'] ?? 'output',
@@ -785,28 +934,24 @@ export class WorkflowEditorComponent {
     event.stopPropagation();
   }
 
-  protected handleCanvasPointerMove(event: MouseEvent): void {
+  protected handleCanvasPointerMove(event: PointerEvent): void {
     const pending = this.pendingConnection();
     if (pending) {
-      const target = event.currentTarget as HTMLElement;
-      const rect = target.getBoundingClientRect();
-      const x = (event.clientX - rect.left - this.panX()) / this.zoom();
-      const y = (event.clientY - rect.top - this.panY()) / this.zoom();
-      this.pendingConnection.set({ ...pending, x, y });
+      const position = this.pointerToCanvas(event);
+      this.pendingConnection.set({ ...pending, ...position });
       return;
     }
 
     const draggingNodeId = this.draggingNodeId();
     if (draggingNodeId) {
-      const target = event.currentTarget as HTMLElement;
-      const rect = target.getBoundingClientRect();
       const nextNode = this.state().nodes.find((node) => node.id === draggingNodeId);
       if (!nextNode) {
         return;
       }
 
-      const nextX = (event.clientX - rect.left - this.dragOffset().x) / this.zoom();
-      const nextY = (event.clientY - rect.top - this.dragOffset().y) / this.zoom();
+      const pointer = this.pointerToCanvas(event);
+      const nextX = pointer.x - this.dragOffset().x;
+      const nextY = pointer.y - this.dragOffset().y;
       const nextState = {
         ...this.state(),
         nodes: this.state().nodes.map((node) =>
@@ -823,6 +968,10 @@ export class WorkflowEditorComponent {
       this.panY.update((value) => value + (event.clientY - previous.y));
       this.lastPointer.set({ x: event.clientX, y: event.clientY });
     }
+  }
+
+  protected handleGlobalPointerMove(event: PointerEvent): void {
+    this.handleCanvasPointerMove(event);
   }
 
   protected handleGlobalPointerUp(event: PointerEvent): void {
@@ -848,9 +997,12 @@ export class WorkflowEditorComponent {
 
   private completeConnection(sourceNodeId: string, sourceHandle: string, targetNodeId: string, targetHandle: string): void {
     const nodes = this.state().nodes;
-    const sourceExists = nodes.some((node) => node.id === sourceNodeId);
+    const sourceNode = nodes.find((node) => node.id === sourceNodeId);
     const targetExists = nodes.some((node) => node.id === targetNodeId);
-    if (!sourceExists || !targetExists || sourceNodeId === targetNodeId || sourceHandle !== 'output' || targetHandle !== 'input') {
+    const validOutput = sourceNode?.type === 'if-condition'
+      ? sourceHandle === 'true' || sourceHandle === 'false'
+      : sourceHandle === 'output';
+    if (!sourceNode || !targetExists || sourceNodeId === targetNodeId || !validOutput || targetHandle !== 'input') {
       return;
     }
 
@@ -881,22 +1033,28 @@ export class WorkflowEditorComponent {
     });
   }
 
-  protected startNodeDrag(event: MouseEvent, nodeId: string): void {
-    if (this.pendingConnection()) {
+  protected startNodeDrag(event: PointerEvent, nodeId: string): void {
+    if (this.pendingConnection() || event.button !== 0) {
       return;
     }
 
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
+    event.preventDefault();
+    event.stopPropagation();
+    const node = this.state().nodes.find((item) => item.id === nodeId);
+    if (!node) {
+      return;
+    }
+
+    const pointer = this.pointerToCanvas(event);
     this.draggingNodeId.set(nodeId);
     this.dragOffset.set({
-      x: (event.clientX - rect.left) / this.zoom(),
-      y: (event.clientY - rect.top) / this.zoom()
+      x: pointer.x - node.position.x,
+      y: pointer.y - node.position.y
     });
     this.selectNode(nodeId);
   }
 
-  protected startPanning(event: MouseEvent): void {
+  protected startPanning(event: PointerEvent): void {
     const target = event.target as HTMLElement;
     if (target.closest('button') || target.closest('input') || target.closest('textarea') || target.closest('select') || target.closest('.cursor-grab')) {
       return;
@@ -952,8 +1110,7 @@ export class WorkflowEditorComponent {
       return '';
     }
 
-    const startX = sourceNode.position.x + 180;
-    const startY = sourceNode.position.y + 60;
+    const { x: startX, y: startY } = this.outputHandlePosition(sourceNode, connection.sourceHandle);
     const endX = targetNode.position.x;
     const endY = targetNode.position.y + 60;
     const midX = (startX + endX) / 2;
@@ -971,10 +1128,18 @@ export class WorkflowEditorComponent {
       return '';
     }
 
-    const startX = sourceNode.position.x + 180;
-    const startY = sourceNode.position.y + 60;
+    const { x: startX, y: startY } = this.outputHandlePosition(sourceNode, pending.sourceHandle);
     const midX = (startX + pending.x) / 2;
     return `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${pending.y}, ${pending.x} ${pending.y}`;
+  }
+
+  private outputHandlePosition(node: WorkflowNode, sourceHandle: string): { x: number; y: number } {
+    const centerY = sourceHandle === 'true' || sourceHandle === 'output'
+      ? 52
+      : sourceHandle === 'false' || sourceHandle === 'output-2'
+        ? 92
+        : 72;
+    return { x: node.position.x + 180, y: node.position.y + centerY };
   }
 
   protected zoomIn(): void {
@@ -992,6 +1157,12 @@ export class WorkflowEditorComponent {
   }
 
   protected saveState(): void {
+    const conditionError = this.conditionalConfigurationError();
+    if (conditionError) {
+      this.saveError.set(conditionError);
+      this.saveMessage.set(null);
+      return;
+    }
     const id = this.workflowId();
     const nextState = { ...this.state(), isDirty: false };
     const payload = {
@@ -1070,6 +1241,11 @@ export class WorkflowEditorComponent {
     if (this.isStartingExecution() || this.executionInputError()) {
       return;
     }
+    const conditionError = this.conditionalConfigurationError();
+    if (conditionError) {
+      this.executionStartError.set(conditionError);
+      return;
+    }
     const workflowId = this.workflowId();
     if (!workflowId || this.state().isDirty || this.isLoading()) {
       this.executionStartError.set(
@@ -1101,6 +1277,31 @@ export class WorkflowEditorComponent {
         this.executionStartError.set(message || 'Unable to start workflow execution. Your JSON input is preserved; please try again.');
       }
     });
+  }
+
+  private conditionalConfigurationError(): string | null {
+    for (const node of this.state().nodes) {
+      if (node.type !== 'if-condition') continue;
+      const field = node.configuration['field'];
+      const operator = node.configuration['operator'];
+      const value = node.configuration['value'];
+      if (typeof field !== 'string' || field.trim() === '' || field.split('.').some((part) => part.trim() === '')) {
+        return `Condition node "${node.name}" requires a valid field path.`;
+      }
+      if (typeof operator !== 'string' || !CONDITION_OPERATORS.includes(operator as ConditionalOperator)) {
+        return `Condition node "${node.name}" has an unsupported operator.`;
+      }
+      if (operator !== 'is empty' && operator !== 'is not empty' && value === undefined) {
+        return `Condition node "${node.name}" requires a comparison value.`;
+      }
+      if (
+        ['greater than', 'greater than or equal', 'less than', 'less than or equal'].includes(operator)
+        && (typeof value === 'boolean' || value === null)
+      ) {
+        return `Condition node "${node.name}" requires a number or text value for ordering comparisons.`;
+      }
+    }
+    return null;
   }
 
   protected undo(): void {

@@ -2,12 +2,14 @@ package com.flowforge.validation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.flowforge.exception.InvalidExecutionRequestException;
+import com.flowforge.executor.NodeExecutionException;
 import com.flowforge.executor.NodeExecutorRegistry;
 import com.flowforge.runtime.WorkflowGraphPlan;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -19,6 +21,7 @@ import java.util.Set;
 @Component
 public class WorkflowGraphValidator {
     private static final Set<String> SUPPORTED_SOURCE_HANDLES = Set.of("output");
+    private static final Set<String> CONDITIONAL_SOURCE_HANDLES = Set.of("true", "false");
     private static final String SUPPORTED_TARGET_HANDLE = "input";
 
     private final NodeExecutorRegistry executorRegistry;
@@ -57,7 +60,13 @@ public class WorkflowGraphValidator {
             if (!executorRegistry.supports(type)) {
                 throw invalid("Node '" + nodeId + "' has unsupported type '" + type + "'");
             }
-            WorkflowGraphPlan.Node node = new WorkflowGraphPlan.Node(nodeId, type, name, nodeJson.get("configuration"));
+            JsonNode configuration = nodeJson.get("configuration");
+            try {
+                executorRegistry.getRequired(type).validateConfiguration(configuration);
+            } catch (NodeExecutionException exception) {
+                throw invalid("Node '" + nodeId + "' has invalid configuration: " + exception.getMessage());
+            }
+            WorkflowGraphPlan.Node node = new WorkflowGraphPlan.Node(nodeId, type, name, configuration);
             nodes.put(nodeId, node);
             if ("manual-trigger".equals(type)) {
                 triggerIds.add(nodeId);
@@ -72,10 +81,11 @@ public class WorkflowGraphValidator {
         }
         String triggerId = triggerIds.getFirst();
 
-        Map<String, WorkflowGraphPlan.Connection> incoming = new LinkedHashMap<>();
+        Map<String, List<WorkflowGraphPlan.Connection>> incoming = new LinkedHashMap<>();
         Map<String, List<WorkflowGraphPlan.Connection>> outgoing = new LinkedHashMap<>();
         Map<String, Integer> indegree = new LinkedHashMap<>();
         nodes.keySet().forEach(nodeId -> {
+            incoming.put(nodeId, new ArrayList<>());
             outgoing.put(nodeId, new ArrayList<>());
             indegree.put(nodeId, 0);
         });
@@ -103,7 +113,9 @@ public class WorkflowGraphValidator {
             if (sourceId.equals(targetId)) {
                 throw invalid("Connection '" + connectionId + "' cannot connect node '" + sourceId + "' to itself");
             }
-            if (!SUPPORTED_SOURCE_HANDLES.contains(sourceHandle)) {
+            WorkflowGraphPlan.Node sourceNode = nodes.get(sourceId);
+            sourceHandle = normalizeSourceHandle(sourceNode, sourceHandle);
+            if (!validSourceHandle(sourceNode, sourceHandle)) {
                 throw invalid("Connection '" + connectionId + "' uses unsupported source handle '" + sourceHandle + "'");
             }
             if (!SUPPORTED_TARGET_HANDLE.equals(targetHandle)) {
@@ -115,18 +127,39 @@ public class WorkflowGraphValidator {
             }
             WorkflowGraphPlan.Connection connection =
                     new WorkflowGraphPlan.Connection(connectionId, sourceId, sourceHandle, targetId, targetHandle);
-            if (incoming.putIfAbsent(targetId, connection) != null) {
-                throw invalid("Node '" + targetId + "' has multiple incoming connections; merge behavior is not supported");
-            }
+            incoming.get(targetId).add(connection);
             outgoing.get(sourceId).add(connection);
             indegree.compute(targetId, (ignored, count) -> count + 1);
         }
 
-        if (incoming.containsKey(triggerId)) {
+        if (!incoming.get(triggerId).isEmpty()) {
             throw invalid("Trigger node '" + triggerId + "' cannot have incoming connections");
+        }
+        for (WorkflowGraphPlan.Node node : nodes.values()) {
+            if ("if-condition".equals(node.type())) {
+                Set<String> connectedBranches = outgoing.get(node.id()).stream()
+                        .map(WorkflowGraphPlan.Connection::sourceHandle)
+                        .collect(java.util.stream.Collectors.toSet());
+                if (!connectedBranches.containsAll(CONDITIONAL_SOURCE_HANDLES)) {
+                    List<String> missing = CONDITIONAL_SOURCE_HANDLES.stream()
+                            .filter(handle -> !connectedBranches.contains(handle))
+                            .toList();
+                    throw invalid("Conditional node '" + node.id() + "' is missing outgoing branch connection(s): "
+                            + String.join(", ", missing));
+                }
+            }
         }
 
         List<String> topologicalOrder = topologicalOrder(outgoing, indegree);
+        Map<String, Integer> executionRank = new HashMap<>();
+        for (int index = 0; index < topologicalOrder.size(); index++) {
+            executionRank.put(topologicalOrder.get(index), index);
+        }
+        incoming.values().forEach(connections -> connections.sort(
+                Comparator.comparingInt((WorkflowGraphPlan.Connection connection) ->
+                                executionRank.get(connection.sourceNodeId()))
+                        .thenComparing(WorkflowGraphPlan.Connection::id)
+        ));
         Set<String> reachable = reachableFrom(triggerId, outgoing);
         if (reachable.size() != nodes.size()) {
             List<String> unreachable = nodes.keySet().stream().filter(id -> !reachable.contains(id)).toList();
@@ -139,6 +172,23 @@ public class WorkflowGraphValidator {
                 incoming,
                 outgoing
         );
+    }
+
+    private String normalizeSourceHandle(WorkflowGraphPlan.Node sourceNode, String sourceHandle) {
+        if (!"if-condition".equals(sourceNode.type())) {
+            return sourceHandle;
+        }
+        return switch (sourceHandle) {
+            case "output" -> "true";
+            case "output-2" -> "false";
+            default -> sourceHandle;
+        };
+    }
+
+    private boolean validSourceHandle(WorkflowGraphPlan.Node sourceNode, String sourceHandle) {
+        return "if-condition".equals(sourceNode.type())
+                ? CONDITIONAL_SOURCE_HANDLES.contains(sourceHandle)
+                : SUPPORTED_SOURCE_HANDLES.contains(sourceHandle);
     }
 
     private List<String> topologicalOrder(

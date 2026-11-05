@@ -185,6 +185,194 @@ class ExecutionApiIntegrationTest {
     }
 
     @Test
+    void selectsConditionalBranchesFansOutAndRejoinsActiveInputsOnce() throws Exception {
+        UUID workflowId = createWorkflow("""
+                {
+                  "nodes":[
+                    {"id":"trigger","type":"manual-trigger"},
+                    {"id":"condition","type":"if-condition","configuration":{"field":"age","operator":"greater than or equal","value":18}},
+                    {"id":"common","type":"set-data","configuration":{"key":"common","value":true}},
+                    {"id":"true-a","type":"set-data","configuration":{"key":"true_a","value":1}},
+                    {"id":"true-b","type":"set-data","configuration":{"key":"true_b","value":2}},
+                    {"id":"false-path","type":"set-data","configuration":{"key":"false_path","value":3}},
+                    {"id":"join","type":"set-data","configuration":{"key":"joined","value":true}},
+                    {"id":"after-join","type":"log-message","configuration":{"message":"Joined"}}
+                  ],
+                  "connections":[
+                    {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                    {"id":"common-edge","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"common","targetHandle":"input"},
+                    {"id":"true-a-edge","sourceNodeId":"condition","sourceHandle":"true","targetNodeId":"true-a","targetHandle":"input"},
+                    {"id":"true-b-edge","sourceNodeId":"condition","sourceHandle":"true","targetNodeId":"true-b","targetHandle":"input"},
+                    {"id":"false-edge","sourceNodeId":"condition","sourceHandle":"false","targetNodeId":"false-path","targetHandle":"input"},
+                    {"id":"join-a","sourceNodeId":"true-a","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"join-b","sourceNodeId":"true-b","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"join-false","sourceNodeId":"false-path","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"join-common","sourceNodeId":"common","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"after","sourceNodeId":"join","sourceHandle":"output","targetNodeId":"after-join","targetHandle":"input"}
+                  ]
+                }
+                """);
+
+        UUID trueExecutionId = startExecution(workflowId, "{\"triggerInput\":{\"age\":20}}");
+        awaitStatus(trueExecutionId, ExecutionStatus.SUCCEEDED);
+        JsonNode trueNodes = objectMapper.readTree(mockMvc.perform(get("/api/executions/{id}/nodes", trueExecutionId))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(findNode(trueNodes, "condition").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(trueNodes, "true-a").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(trueNodes, "true-b").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(trueNodes, "false-path").path("status").asText()).isEqualTo("SKIPPED");
+        JsonNode trueJoinInput = findNode(trueNodes, "join").path("inputData").path("inputs");
+        assertThat(trueJoinInput.size()).isEqualTo(3);
+        assertThat(trueJoinInput.has("true-a")).isTrue();
+        assertThat(trueJoinInput.has("true-b")).isTrue();
+        assertThat(trueJoinInput.has("common")).isTrue();
+        assertThat(findNode(trueNodes, "join").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(trueNodes).filteredOn(node -> node.path("workflowNodeId").asText().equals("join")).hasSize(1);
+        assertThat(findNode(trueNodes, "after-join").path("status").asText()).isEqualTo("SUCCEEDED");
+
+        UUID falseExecutionId = startExecution(workflowId, "{\"triggerInput\":{\"age\":15}}");
+        awaitStatus(falseExecutionId, ExecutionStatus.SUCCEEDED);
+        JsonNode falseNodes = objectMapper.readTree(mockMvc.perform(get("/api/executions/{id}/nodes", falseExecutionId))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(findNode(falseNodes, "true-a").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(falseNodes, "true-b").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(falseNodes, "false-path").path("status").asText()).isEqualTo("SUCCEEDED");
+        JsonNode falseJoinInput = findNode(falseNodes, "join").path("inputData").path("inputs");
+        assertThat(falseJoinInput.size()).isEqualTo(2);
+        assertThat(falseJoinInput.has("false-path")).isTrue();
+        assertThat(falseJoinInput.has("common")).isTrue();
+        assertThat(findNode(falseNodes, "after-join").path("status").asText()).isEqualTo("SUCCEEDED");
+
+        JsonNode logs = objectMapper.readTree(mockMvc.perform(get("/api/executions/{id}/logs", trueExecutionId))
+                .andReturn().getResponse().getContentAsString());
+        JsonNode decisionLog = null;
+        for (JsonNode log : logs) {
+            if (log.path("details").path("selectedBranch").isTextual()) {
+                decisionLog = log;
+            }
+        }
+        assertThat(decisionLog).isNotNull();
+        assertThat(decisionLog.path("details").path("selectedBranch").asText()).isEqualTo("TRUE");
+        assertThat(decisionLog.path("details").has("actualValue")).isFalse();
+    }
+
+    @Test
+    void executesNestedConditionalsAndSkipsEntireUnselectedSubgraph() throws Exception {
+        UUID workflowId = createWorkflow("""
+                {
+                  "nodes":[
+                    {"id":"trigger","type":"manual-trigger"},
+                    {"id":"outer","type":"if-condition","configuration":{"field":"enabled","operator":"equals","value":true}},
+                    {"id":"inner","type":"if-condition","configuration":{"field":"age","operator":"greater than or equal","value":18}},
+                    {"id":"outer-false","type":"log-message","configuration":{"message":"Outer false"}},
+                    {"id":"inner-true","type":"log-message","configuration":{"message":"Inner true"}},
+                    {"id":"inner-false","type":"log-message","configuration":{"message":"Inner false"}},
+                    {"id":"join","type":"log-message","configuration":{"message":"Joined"}},
+                    {"id":"inactive-join","type":"log-message","configuration":{"message":"Must be skipped when inner branch is inactive"}}
+                  ],
+                  "connections":[
+                    {"id":"outer-start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"outer","targetHandle":"input"},
+                    {"id":"outer-true","sourceNodeId":"outer","sourceHandle":"true","targetNodeId":"inner","targetHandle":"input"},
+                    {"id":"outer-false-edge","sourceNodeId":"outer","sourceHandle":"false","targetNodeId":"outer-false","targetHandle":"input"},
+                    {"id":"inner-true-edge","sourceNodeId":"inner","sourceHandle":"true","targetNodeId":"inner-true","targetHandle":"input"},
+                    {"id":"inner-false-edge","sourceNodeId":"inner","sourceHandle":"false","targetNodeId":"inner-false","targetHandle":"input"},
+                    {"id":"join-outer","sourceNodeId":"outer-false","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"join-inner-true","sourceNodeId":"inner-true","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"join-inner-false","sourceNodeId":"inner-false","sourceHandle":"output","targetNodeId":"join","targetHandle":"input"},
+                    {"id":"dead-join-true","sourceNodeId":"inner-true","sourceHandle":"output","targetNodeId":"inactive-join","targetHandle":"input"},
+                    {"id":"dead-join-false","sourceNodeId":"inner-false","sourceHandle":"output","targetNodeId":"inactive-join","targetHandle":"input"}
+                  ]
+                }
+                """);
+
+        UUID outerFalseExecution = startExecution(workflowId, "{\"triggerInput\":{\"enabled\":false,\"age\":22}}");
+        awaitStatus(outerFalseExecution, ExecutionStatus.SUCCEEDED);
+        JsonNode outerFalseNodes = objectMapper.readTree(mockMvc.perform(
+                get("/api/executions/{id}/nodes", outerFalseExecution)).andReturn().getResponse().getContentAsString());
+        assertThat(findNode(outerFalseNodes, "inner").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(outerFalseNodes, "inner-true").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(outerFalseNodes, "inner-false").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(outerFalseNodes, "join").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(outerFalseNodes, "inactive-join").path("status").asText()).isEqualTo("SKIPPED");
+
+        UUID innerFalseExecution = startExecution(workflowId, "{\"triggerInput\":{\"enabled\":true,\"age\":15}}");
+        awaitStatus(innerFalseExecution, ExecutionStatus.SUCCEEDED);
+        JsonNode innerFalseNodes = objectMapper.readTree(mockMvc.perform(
+                get("/api/executions/{id}/nodes", innerFalseExecution)).andReturn().getResponse().getContentAsString());
+        assertThat(findNode(innerFalseNodes, "inner-true").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(innerFalseNodes, "inner-false").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(innerFalseNodes, "outer-false").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(innerFalseNodes, "join").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(innerFalseNodes, "inactive-join").path("status").asText()).isEqualTo("SUCCEEDED");
+
+        UUID innerTrueExecution = startExecution(workflowId, "{\"triggerInput\":{\"enabled\":true,\"age\":22}}");
+        awaitStatus(innerTrueExecution, ExecutionStatus.SUCCEEDED);
+        JsonNode innerTrueNodes = objectMapper.readTree(mockMvc.perform(
+                get("/api/executions/{id}/nodes", innerTrueExecution)).andReturn().getResponse().getContentAsString());
+        assertThat(findNode(innerTrueNodes, "inner-true").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(innerTrueNodes, "inner-false").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(innerTrueNodes, "outer-false").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(innerTrueNodes, "inactive-join").path("status").asText()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void conditionEvaluationErrorsFailTheConditionAndSkipBothBranches() throws Exception {
+        UUID workflowId = createWorkflow("""
+                {
+                  "nodes":[
+                    {"id":"trigger","type":"manual-trigger"},
+                    {"id":"condition","type":"if-condition","configuration":{"field":"age","operator":"greater than","value":18}},
+                    {"id":"yes","type":"log-message","configuration":{"message":"yes"}},
+                    {"id":"no","type":"log-message","configuration":{"message":"no"}}
+                  ],
+                  "connections":[
+                    {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                    {"id":"yes-edge","sourceNodeId":"condition","sourceHandle":"true","targetNodeId":"yes","targetHandle":"input"},
+                    {"id":"no-edge","sourceNodeId":"condition","sourceHandle":"false","targetNodeId":"no","targetHandle":"input"}
+                  ]
+                }
+                """);
+        UUID executionId = startExecution(workflowId, "{\"triggerInput\":{}}");
+        awaitStatus(executionId, ExecutionStatus.FAILED);
+
+        JsonNode nodes = objectMapper.readTree(mockMvc.perform(get("/api/executions/{id}/nodes", executionId))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(findNode(nodes, "condition").path("status").asText()).isEqualTo("FAILED");
+        assertThat(findNode(nodes, "condition").path("errorMessage").asText()).contains("is missing");
+        assertThat(findNode(nodes, "yes").path("status").asText()).isEqualTo("SKIPPED");
+        assertThat(findNode(nodes, "no").path("status").asText()).isEqualTo("SKIPPED");
+    }
+
+    @Test
+    void routesLegacyConditionalHandlesWithoutMutatingTheSavedSnapshot() throws Exception {
+        UUID workflowId = createWorkflow("""
+                {
+                  "nodes":[
+                    {"id":"trigger","type":"manual-trigger"},
+                    {"id":"condition","type":"if-condition","configuration":{"field":"age","operator":"greater than","value":18}},
+                    {"id":"yes","type":"log-message","configuration":{"message":"yes"}},
+                    {"id":"no","type":"log-message","configuration":{"message":"no"}}
+                  ],
+                  "connections":[
+                    {"id":"start","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"condition","targetHandle":"input"},
+                    {"id":"legacy-yes","sourceNodeId":"condition","sourceHandle":"output","targetNodeId":"yes","targetHandle":"input"},
+                    {"id":"legacy-no","sourceNodeId":"condition","sourceHandle":"output-2","targetNodeId":"no","targetHandle":"input"}
+                  ]
+                }
+                """);
+        UUID executionId = startExecution(workflowId, "{\"triggerInput\":{\"age\":20}}");
+        awaitStatus(executionId, ExecutionStatus.SUCCEEDED);
+
+        JsonNode snapshot = executionRepository.findById(executionId).orElseThrow().getWorkflowDefinition();
+        assertThat(snapshot.path("connections").get(1).path("sourceHandle").asText()).isEqualTo("output");
+        assertThat(snapshot.path("connections").get(2).path("sourceHandle").asText()).isEqualTo("output-2");
+        JsonNode nodes = objectMapper.readTree(mockMvc.perform(get("/api/executions/{id}/nodes", executionId))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(findNode(nodes, "yes").path("status").asText()).isEqualTo("SUCCEEDED");
+        assertThat(findNode(nodes, "no").path("status").asText()).isEqualTo("SKIPPED");
+    }
+
+    @Test
     void failsNodeAndSkipsItsDownstreamNodes() throws Exception {
         UUID workflowId = createWorkflow("""
                 {

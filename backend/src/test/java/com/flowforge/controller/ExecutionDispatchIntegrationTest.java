@@ -77,11 +77,11 @@ class ExecutionDispatchIntegrationTest {
                         .content("{\"triggerInput\":{\"user\":\"Alex\"}}"))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString();
-        UUID executionId = UUID.fromString(objectMapper.readTree(startResponse).path("id").asText());
+        JsonNode startBody = objectMapper.readTree(startResponse);
+        assertThat(startBody.path("status").asText()).isEqualTo("QUEUED");
+        UUID executionId = UUID.fromString(startBody.path("id").asText());
 
         try {
-            assertThat(executionRepository.findById(executionId).orElseThrow().getStatus())
-                    .isEqualTo(ExecutionStatus.QUEUED);
             assertThat(executorStarted.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(executionRepository.findById(executionId).orElseThrow().getStatus())
                     .isEqualTo(ExecutionStatus.RUNNING);

@@ -1,9 +1,12 @@
 package com.flowforge.runtime;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.flowforge.exception.InvalidExecutionRequestException;
 import com.flowforge.executor.NodeExecutionException;
+import com.flowforge.executor.NodeExecutionResult;
 import com.flowforge.executor.NodeExecutor;
 import com.flowforge.executor.NodeExecutorRegistry;
 import com.flowforge.model.execution.ExecutionLogLevel;
@@ -17,6 +20,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -59,18 +63,32 @@ public class WorkflowExecutionRuntime {
 
         Map<String, JsonNode> outputs = new LinkedHashMap<>();
         Map<String, Map<String, JsonNode>> branchOutputs = new LinkedHashMap<>();
+        Map<String, Boolean> activeEdges = new LinkedHashMap<>();
         Instant deadline = Instant.now().plus(EXECUTION_TIMEOUT);
 
         for (int index = 0; index < graph.executionOrder().size(); index++) {
             WorkflowGraphPlan.Node node = graph.executionOrder().get(index);
-            JsonNode input = inputFor(node, graph, snapshot, outputs);
+            List<WorkflowGraphPlan.Connection> incoming = graph.incomingConnections().getOrDefault(node.id(), List.of());
+            if (incoming.stream().anyMatch(connection -> !activeEdges.containsKey(connection.id()))) {
+                failExecution(executionId, graph, index, "Workflow graph could not resolve all incoming connections.");
+                return;
+            }
+            List<WorkflowGraphPlan.Connection> activeIncoming = incoming.stream()
+                    .filter(connection -> Boolean.TRUE.equals(activeEdges.get(connection.id())))
+                    .toList();
+            if (!node.id().equals(graph.triggerNodeId()) && activeIncoming.isEmpty()) {
+                stateService.skipNode(executionId, node.id());
+                deactivateOutgoing(node, graph, activeEdges);
+                continue;
+            }
+            JsonNode input = inputFor(node, graph, snapshot, activeIncoming, outputs);
             if (Instant.now().isAfter(deadline)) {
                 failExecution(executionId, graph, index, "Workflow execution timed out.");
                 return;
             }
 
             UUID nodeExecutionId = stateService.beginNode(executionId, node.id(), input);
-            Map<String, JsonNode> upstreamOutputs = upstreamOutputs(node, graph, branchOutputs, outputs);
+            Map<String, JsonNode> upstreamOutputs = upstreamOutputs(activeIncoming, branchOutputs, outputs);
             ExecutionContext context = new ExecutionContext(
                     executionId,
                     nodeExecutionId,
@@ -89,15 +107,18 @@ public class WorkflowExecutionRuntime {
                     throw new NodeExecutionException("Workflow execution timed out.");
                 }
                 NodeExecutor executor = executorRegistry.getRequired(node.type());
-                JsonNode output = executor.execute(input == null ? NullNode.getInstance() : input.deepCopy(), context);
+                NodeExecutionResult result = executor.executeResult(
+                        input == null ? NullNode.getInstance() : input.deepCopy(),
+                        context
+                );
                 if (context.isExpired()) {
                     throw new NodeExecutionException("Workflow execution timed out.");
                 }
-                JsonNode safeOutput = output == null ? NullNode.getInstance() : output.deepCopy();
+                JsonNode safeOutput = result.output() == null ? NullNode.getInstance() : result.output();
+                activateOutgoing(node, graph, result.selectedOutputHandle(), activeEdges);
                 stateService.succeedNode(executionId, node.id(), input, safeOutput);
                 outputs.put(node.id(), safeOutput.deepCopy());
-
-                Map<String, JsonNode> currentBranch = new LinkedHashMap<>(upstreamOutputs);
+                Map<String, JsonNode> currentBranch = branchContext(activeIncoming, branchOutputs, upstreamOutputs);
                 currentBranch.put(node.id(), safeOutput.deepCopy());
                 branchOutputs.put(node.id(), currentBranch);
             } catch (Exception exception) {
@@ -122,36 +143,106 @@ public class WorkflowExecutionRuntime {
             WorkflowGraphPlan.Node node,
             WorkflowGraphPlan graph,
             ExecutionRunSnapshot snapshot,
+            List<WorkflowGraphPlan.Connection> activeIncoming,
             Map<String, JsonNode> outputs
     ) {
         if (node.id().equals(graph.triggerNodeId())) {
             return snapshot.triggerInput();
         }
-        WorkflowGraphPlan.Connection incoming = graph.incomingConnections().get(node.id());
-        JsonNode output = incoming == null ? null : outputs.get(incoming.sourceNodeId());
-        return output == null ? NullNode.getInstance() : output.deepCopy();
+        if (activeIncoming.size() == 1) {
+            JsonNode output = outputs.get(activeIncoming.getFirst().sourceNodeId());
+            return output == null ? NullNode.getInstance() : output.deepCopy();
+        }
+        ObjectNode aggregate = JsonNodeFactory.instance.objectNode();
+        ObjectNode inputs = aggregate.putObject("inputs");
+        activeIncoming.forEach(connection -> {
+            JsonNode output = outputs.get(connection.sourceNodeId());
+            inputs.set(connection.sourceNodeId(), output == null ? NullNode.getInstance() : output.deepCopy());
+        });
+        return aggregate;
     }
 
     private Map<String, JsonNode> upstreamOutputs(
-            WorkflowGraphPlan.Node node,
-            WorkflowGraphPlan graph,
+            List<WorkflowGraphPlan.Connection> activeIncoming,
             Map<String, Map<String, JsonNode>> branchOutputs,
             Map<String, JsonNode> outputs
     ) {
-        WorkflowGraphPlan.Connection incoming = graph.incomingConnections().get(node.id());
-        if (incoming == null) {
+        if (activeIncoming.isEmpty()) {
             return Map.of();
         }
-        Map<String, JsonNode> ancestors = branchOutputs.get(incoming.sourceNodeId());
+        if (activeIncoming.size() > 1) {
+            Map<String, JsonNode> directInputs = new LinkedHashMap<>();
+            activeIncoming.forEach(connection -> {
+                JsonNode output = outputs.get(connection.sourceNodeId());
+                directInputs.put(
+                        connection.sourceNodeId(),
+                        output == null ? NullNode.getInstance() : output.deepCopy()
+                );
+            });
+            return directInputs;
+        }
+        String parentId = activeIncoming.getFirst().sourceNodeId();
+        Map<String, JsonNode> ancestors = branchOutputs.get(parentId);
         if (ancestors != null) {
             Map<String, JsonNode> copy = new LinkedHashMap<>();
             ancestors.forEach((nodeId, output) -> copy.put(nodeId, output.deepCopy()));
             return copy;
         }
-        JsonNode parentOutput = outputs.get(incoming.sourceNodeId());
-        return parentOutput == null
-                ? Map.of()
-                : Map.of(incoming.sourceNodeId(), parentOutput.deepCopy());
+        JsonNode parentOutput = outputs.get(parentId);
+        return parentOutput == null ? Map.of() : Map.of(parentId, parentOutput.deepCopy());
+    }
+
+    private Map<String, JsonNode> branchContext(
+            List<WorkflowGraphPlan.Connection> activeIncoming,
+            Map<String, Map<String, JsonNode>> branchOutputs,
+            Map<String, JsonNode> nodeInputs
+    ) {
+        Map<String, JsonNode> branchContext = new LinkedHashMap<>();
+        if (activeIncoming.size() > 1) {
+            activeIncoming.forEach(connection -> {
+                Map<String, JsonNode> parentContext = branchOutputs.get(connection.sourceNodeId());
+                if (parentContext != null) {
+                    parentContext.forEach((nodeId, output) -> branchContext.putIfAbsent(nodeId, output.deepCopy()));
+                }
+            });
+        } else {
+            nodeInputs.forEach((nodeId, output) -> branchContext.put(nodeId, output.deepCopy()));
+        }
+        return branchContext;
+    }
+
+    private void activateOutgoing(
+            WorkflowGraphPlan.Node node,
+            WorkflowGraphPlan graph,
+            String selectedOutputHandle,
+            Map<String, Boolean> activeEdges
+    ) {
+        List<WorkflowGraphPlan.Connection> outgoing =
+                graph.outgoingConnections().getOrDefault(node.id(), List.of());
+        if (selectedOutputHandle == null) {
+            outgoing.forEach(connection -> activeEdges.put(connection.id(), true));
+            return;
+        }
+        if (!"if-condition".equals(node.type())
+                || !selectedOutputHandle.equals("true") && !selectedOutputHandle.equals("false")) {
+            throw new NodeExecutionException("Node returned an invalid output branch.");
+        }
+        boolean hasSelectedEdge = outgoing.stream()
+                .anyMatch(connection -> selectedOutputHandle.equals(connection.sourceHandle()));
+        if (!hasSelectedEdge) {
+            throw new NodeExecutionException("Selected conditional branch has no outgoing connection.");
+        }
+        outgoing.forEach(connection ->
+                activeEdges.put(connection.id(), selectedOutputHandle.equals(connection.sourceHandle())));
+    }
+
+    private void deactivateOutgoing(
+            WorkflowGraphPlan.Node node,
+            WorkflowGraphPlan graph,
+            Map<String, Boolean> activeEdges
+    ) {
+        graph.outgoingConnections().getOrDefault(node.id(), List.of())
+                .forEach(connection -> activeEdges.put(connection.id(), false));
     }
 
     private void failExecution(

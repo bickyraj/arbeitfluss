@@ -56,7 +56,17 @@ import type {
                       <p class="break-all text-sm font-medium text-slate-900">{{ node.workflowNodeId }}</p>
                       <p class="text-xs text-slate-500">{{ node.nodeType }}</p>
                     </div>
-                    <span class="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">{{ node.status }}</span>
+                    <span class="rounded-full px-2 py-1 text-[11px] font-medium"
+                      [class.bg-amber-50]="node.status === 'RUNNING'"
+                      [class.text-amber-700]="node.status === 'RUNNING'"
+                      [class.bg-emerald-50]="node.status === 'SUCCEEDED'"
+                      [class.text-emerald-700]="node.status === 'SUCCEEDED'"
+                      [class.bg-rose-50]="node.status === 'FAILED'"
+                      [class.text-rose-700]="node.status === 'FAILED'"
+                      [class.bg-slate-100]="node.status === 'PENDING' || node.status === 'SKIPPED'"
+                      [class.text-slate-600]="node.status === 'PENDING' || node.status === 'SKIPPED'">
+                      {{ node.status === 'SKIPPED' ? 'SKIPPED · branch not selected' : node.status }}
+                    </span>
                   </div>
                   @if (node.errorMessage) {
                     <p class="mt-2 text-sm text-rose-700">{{ node.errorMessage }}</p>

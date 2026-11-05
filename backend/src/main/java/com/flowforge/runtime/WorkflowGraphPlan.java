@@ -11,12 +11,19 @@ import java.util.stream.Collectors;
 public record WorkflowGraphPlan(
         String triggerNodeId,
         List<Node> executionOrder,
-        Map<String, Connection> incomingConnections,
+        Map<String, List<Connection>> incomingConnections,
         Map<String, List<Connection>> outgoingConnections
 ) {
     public WorkflowGraphPlan {
         executionOrder = List.copyOf(executionOrder);
-        incomingConnections = Collections.unmodifiableMap(new LinkedHashMap<>(incomingConnections));
+        Map<String, List<Connection>> orderedIncoming = incomingConnections.entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        entry -> List.copyOf(entry.getValue()),
+                        (first, second) -> first,
+                        LinkedHashMap::new
+                ));
+        incomingConnections = Collections.unmodifiableMap(orderedIncoming);
         Map<String, List<Connection>> orderedOutgoing = outgoingConnections.entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
