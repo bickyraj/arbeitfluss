@@ -68,16 +68,16 @@ public class WorkflowGraphValidator {
             }
             WorkflowGraphPlan.Node node = new WorkflowGraphPlan.Node(nodeId, type, name, configuration);
             nodes.put(nodeId, node);
-            if ("manual-trigger".equals(type)) {
+            if ("manual-trigger".equals(type) || "webhook-trigger".equals(type)) {
                 triggerIds.add(nodeId);
             }
         }
 
         if (triggerIds.isEmpty()) {
-            throw invalid("Workflow must contain one manual-trigger node");
+            throw invalid("Workflow must contain one trigger node");
         }
         if (triggerIds.size() > 1) {
-            throw invalid("Workflow contains multiple manual-trigger nodes: " + String.join(", ", triggerIds));
+            throw invalid("Workflow contains multiple trigger nodes: " + String.join(", ", triggerIds));
         }
         String triggerId = triggerIds.getFirst();
 

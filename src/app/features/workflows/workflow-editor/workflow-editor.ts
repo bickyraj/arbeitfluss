@@ -1,8 +1,9 @@
-import { Component, computed, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ExecutionApiService } from '../../../core/services/execution-api.service';
 import { ExecutionDetailsComponent } from '../../executions/execution-details';
+import { environment } from '../../../../environments/environment';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -27,7 +28,10 @@ import {
   LucideAngularModule,
   type LucideIconData
 } from 'lucide-angular';
-import { WorkflowApiService } from '../../../core/services/workflow-api.service';
+import {
+  WorkflowApiService,
+  type WebhookRegistrationResponse
+} from '../../../core/services/workflow-api.service';
 import type {
   NodeLibraryItem,
   ConditionalOperator,
@@ -70,8 +74,8 @@ const makeNode = (id: string, type: WorkflowNodeType, x: number, y: number): Wor
     },
     'webhook-trigger': {
       name: 'Webhook Trigger',
-      description: 'Accepts events from an external webhook.',
-      config: { url: 'https://example.com/webhook', method: 'POST' }
+      description: 'Starts when an external application sends an HTTP request.',
+      config: { method: 'POST', authentication: 'secret-token', active: true, responseMode: 'immediate' }
     },
     'http-request': {
       name: 'HTTP Request',
@@ -186,7 +190,7 @@ interface HttpKeyValueEntry {
 
 @Component({
   selector: 'app-workflow-editor',
-  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [LucideAngularModule, RouterLink, ExecutionDetailsComponent],
   template: `
     <div
@@ -454,6 +458,65 @@ interface HttpKeyValueEntry {
                   <div class="space-y-3">
                     <label class="block text-sm font-medium text-slate-700">Trigger info<input type="text" [value]="readConfig(node, 'triggerInfo')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('triggerInfo', $event)" /></label>
                     <label class="block text-sm font-medium text-slate-700">Description<input type="text" [value]="readConfig(node, 'description')" class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" (input)="updateSelectedNodeConfig('description', $event)" /></label>
+                  </div>
+                }
+                @case ('webhook-trigger') {
+                  <div class="space-y-4">
+                    <label class="block text-sm font-medium text-slate-700">HTTP method
+                      <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'method') || 'POST'" (change)="updateSelectedNodeConfig('method', $event)">
+                        <option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+                      </select>
+                    </label>
+                    <label class="block text-sm font-medium text-slate-700">Authentication
+                      <select class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-400" [value]="readConfig(node, 'authentication') || 'secret-token'" (change)="updateSelectedNodeConfig('authentication', $event)">
+                        <option value="secret-token">Secret Token</option><option value="none">None</option>
+                      </select>
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-slate-700">
+                      <input type="checkbox" class="rounded border-slate-300 text-indigo-600" [checked]="readConfig(node, 'active') !== 'false'" (change)="updateWebhookActive($event)" />
+                      Webhook node enabled
+                    </label>
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Endpoint</p>
+                      @if (webhookRegistration(node.id); as registration) {
+                        <p class="mt-2 break-all font-mono text-xs text-slate-700">{{ webhookUrl(registration) }}</p>
+                        <button type="button" class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100" (click)="copyWebhookUrl(registration)">Copy URL</button>
+                        <p class="mt-3 text-xs font-medium" [class.text-emerald-700]="registration.enabled" [class.text-amber-700]="!registration.enabled">
+                          {{ webhookStatus(node, registration) }}
+                        </p>
+                      } @else {
+                        <p class="mt-2 text-xs text-slate-600">Save this workflow to provision its stable endpoint.</p>
+                      }
+                    </div>
+                    @if (readConfig(node, 'authentication') !== 'none') {
+                      <div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                        The secret is stored as a one-way hash and is shown only once after generation. Keep it private; it is not included in workflow responses.
+                        @if (webhookRegistration(node.id); as registration) {
+                          <button type="button" class="mt-3 block rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50" [disabled]="!workflowId() || state().isDirty || webhookSecretBusy()" (click)="generateWebhookSecret(node.id)">
+                            {{ webhookSecretBusy() ? 'Generating…' : registration.secretConfigured ? 'Regenerate Secret' : 'Generate Secret' }}
+                          </button>
+                        }
+                      </div>
+                    }
+                    @if (webhookSecretReveal()?.nodeId === node.id) {
+                      <div class="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+                        <p class="text-xs font-semibold text-indigo-900">Copy and store this token now. It cannot be retrieved later.</p>
+                        <code class="mt-2 block break-all text-xs text-indigo-950">{{ webhookSecretReveal()?.secret }}</code>
+                        <button type="button" class="mt-2 mr-3 text-xs font-semibold text-indigo-700 underline" (click)="copyWebhookSecret()">Copy secret</button>
+                        <button type="button" class="mt-2 text-xs font-semibold text-indigo-700 underline" (click)="dismissWebhookSecret()">Hide secret</button>
+                      </div>
+                    }
+                    @if (webhookMessage()) {
+                      <p role="status" class="text-xs text-slate-600">{{ webhookMessage() }}</p>
+                    }
+                    <div class="rounded-xl border border-slate-200 p-3">
+                      <p class="text-xs font-semibold text-slate-700">Test with curl</p>
+                      <pre class="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2 text-[11px] text-slate-100">curl -X {{ readConfig(node, 'method') || 'POST' }} "YOUR_WEBHOOK_URL" \\
+  -H "Content-Type: application/json" \\
+  -H "X-FlowForge-Webhook-Secret: YOUR_SECRET" \\
+  -d '&#123;"orderId":"order_123","amount":99.99&#125;'</pre>
+                      <p class="mt-2 text-[11px] leading-4 text-slate-500">Requests are acknowledged immediately and queued for asynchronous execution.</p>
+                    </div>
                   </div>
                 }
                 @case ('http-request') {
@@ -726,6 +789,11 @@ export class WorkflowEditorComponent {
   protected readonly saveMessage = signal<string | null>(null);
   protected readonly saveError = signal<string | null>(null);
   protected readonly workflowId = signal<string | null>(null);
+  protected readonly workflowActive = signal(false);
+  protected readonly webhookRegistrations = signal<WebhookRegistrationResponse[]>([]);
+  protected readonly webhookSecretReveal = signal<{ nodeId: string; secret: string } | null>(null);
+  protected readonly webhookSecretBusy = signal(false);
+  protected readonly webhookMessage = signal<string | null>(null);
   protected readonly executionDialogOpen = signal(false);
   protected readonly executionInput = signal('{\n  "user": "Alex",\n  "message": "Hello FlowForge"\n}');
   protected readonly executionTimeoutSeconds = signal('300');
@@ -896,6 +964,92 @@ export class WorkflowEditorComponent {
           : node
       ),
       isDirty: true
+    });
+  }
+
+  protected updateWebhookActive(event: Event): void {
+    const active = (event.target as HTMLInputElement | null)?.checked ?? false;
+    const selectedId = this.selectedNodeId();
+    if (!selectedId) return;
+    this.pushState({
+      ...this.state(),
+      nodes: this.state().nodes.map((node) => node.id === selectedId
+        ? { ...node, configuration: { ...node.configuration, active } }
+        : node),
+      isDirty: true
+    });
+  }
+
+  protected webhookRegistration(nodeId: string): WebhookRegistrationResponse | null {
+    return this.webhookRegistrations().find((registration) => registration.nodeId === nodeId) ?? null;
+  }
+
+  protected webhookUrl(registration: WebhookRegistrationResponse): string {
+    const apiBase = environment.apiBaseUrl.replace(/\/$/, '');
+    return `${apiBase}/webhooks/${registration.webhookId}`;
+  }
+
+  protected webhookStatus(node: WorkflowNode, registration: WebhookRegistrationResponse): string {
+    if (this.state().isDirty) return 'Unsaved changes — save before sending requests.';
+    if (!this.workflowActive() || this.readConfig(node, 'active') === 'false') return 'Inactive';
+    if (registration.authenticationMode === 'SECRET_TOKEN' && !registration.secretConfigured) {
+      return 'Missing required secret — generate one to enable this endpoint.';
+    }
+    return registration.enabled ? 'Active — waiting for a request.' : 'Inactive';
+  }
+
+  protected copyWebhookUrl(registration: WebhookRegistrationResponse): void {
+    this.webhookMessage.set(null);
+    if (!navigator.clipboard?.writeText) {
+      this.webhookMessage.set('Clipboard access is unavailable; copy the URL above.');
+      return;
+    }
+    navigator.clipboard.writeText(this.webhookUrl(registration)).then(
+      () => this.webhookMessage.set('Webhook URL copied.'),
+      () => this.webhookMessage.set('Unable to access the clipboard; copy the URL above.')
+    );
+  }
+
+  protected copyWebhookSecret(): void {
+    const secret = this.webhookSecretReveal()?.secret;
+    if (!secret) return;
+    if (!navigator.clipboard?.writeText) {
+      this.webhookMessage.set('Clipboard access is unavailable; select and copy the token above.');
+      return;
+    }
+    navigator.clipboard.writeText(secret).then(
+      () => this.webhookMessage.set('Secret copied. Store it securely; it will not be shown again.'),
+      () => this.webhookMessage.set('Unable to access the clipboard; select and copy the token above.')
+    );
+  }
+
+  protected generateWebhookSecret(nodeId: string): void {
+    const workflowId = this.workflowId();
+    if (!workflowId || this.webhookSecretBusy()) return;
+    this.webhookSecretBusy.set(true);
+    this.webhookMessage.set(null);
+    this.webhookSecretReveal.set(null);
+    this.workflowApi.regenerateWebhookSecret(workflowId, nodeId).subscribe({
+      next: ({ secret }) => {
+        this.webhookSecretBusy.set(false);
+        this.webhookSecretReveal.set({ nodeId, secret });
+        this.loadWebhookRegistrations(workflowId);
+      },
+      error: () => {
+        this.webhookSecretBusy.set(false);
+        this.webhookMessage.set('Unable to generate a secret. Save the workflow and try again.');
+      }
+    });
+  }
+
+  protected dismissWebhookSecret(): void {
+    this.webhookSecretReveal.set(null);
+  }
+
+  private loadWebhookRegistrations(workflowId: string): void {
+    this.workflowApi.getWebhooks(workflowId).subscribe({
+      next: (registrations) => this.webhookRegistrations.set(registrations),
+      error: () => this.webhookMessage.set('Unable to load webhook registration state.')
     });
   }
 
@@ -1408,7 +1562,6 @@ export class WorkflowEditorComponent {
     const payload = {
       name: nextState.workflowName.trim() || 'Untitled Workflow',
       description: nextState.workflowDescription ?? 'No description provided.',
-      active: true,
       definition: {
         workflowId: id ?? nextState.workflowId,
         workflowName: nextState.workflowName.trim() || 'Untitled Workflow',
@@ -1438,6 +1591,7 @@ export class WorkflowEditorComponent {
         this.saveMessage.set('Workflow saved');
         this.saveError.set(null);
         this.workflowId.set(updatedWorkflow.id ?? id);
+        this.loadWebhookRegistrations(updatedWorkflow.id ?? id);
         const backendState: WorkflowEditorState = {
           workflowId: updatedWorkflow.id ?? id,
           workflowName: updatedWorkflow.name,
@@ -1556,7 +1710,22 @@ export class WorkflowEditorComponent {
   private workflowConfigurationError(): string | null {
     const conditionError = this.conditionalConfigurationError();
     if (conditionError) return conditionError;
+    const triggers = this.state().nodes.filter((node) =>
+      node.type === 'manual-trigger' || node.type === 'webhook-trigger'
+    );
+    if (triggers.length !== 1) {
+      return 'A workflow must contain exactly one Manual Trigger or Webhook Trigger.';
+    }
     for (const node of this.state().nodes) {
+      if (node.type === 'webhook-trigger') {
+        const method = (this.readConfig(node, 'method') || 'POST').toUpperCase();
+        if (!['POST', 'GET', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+          return `Webhook Trigger "${node.name}" has an unsupported HTTP method.`;
+        }
+        if (!['none', 'secret-token'].includes(this.readConfig(node, 'authentication') || 'secret-token')) {
+          return `Webhook Trigger "${node.name}" has an unsupported authentication mode.`;
+        }
+      }
       if (node.type !== 'http-request') continue;
       if (this.httpUrlError(node)) return `HTTP Request node "${node.name}" requires a valid HTTP or HTTPS URL.`;
       if (this.httpTimeoutError(node)) return `HTTP Request node "${node.name}" requires a timeout between 1 and 3600 seconds.`;
@@ -1658,6 +1827,8 @@ export class WorkflowEditorComponent {
     this.workflowApi.getWorkflow(workflowId).subscribe({
       next: (workflow) => {
         this.isLoading.set(false);
+        this.workflowActive.set(workflow.active);
+        this.loadWebhookRegistrations(workflowId);
         const existingState = this.loadWorkflowState(workflowId);
         const definition = existingState ?? {
           workflowId,

@@ -337,3 +337,36 @@ Create a backend README explaining:
 - Setup documentation is complete.
 
 The result should be a clean and maintainable backend foundation for the future FlowForge execution engine and AI agent platform.
+
+## Administrator API authentication
+
+Management routes under `/api/**` use one shared deployment administrator token.
+Generate a high-entropy value locally with `openssl rand -hex 32`, then set
+`FLOWFORGE_ADMIN_TOKEN` in the shell that starts the backend:
+
+```sh
+export FLOWFORGE_ADMIN_TOKEN="$(openssl rand -hex 32)"
+cd backend
+./gradlew bootRun
+```
+
+Keep the value private and outside source control. Clients send
+`Authorization: Bearer <administrator-token>` on management requests.
+`POST /api/auth/verify` uses the same header and returns `204` when valid, `401`
+when credentials are missing or invalid, and `503` when the deployment token is
+missing or blank. Protected management APIs also fail closed with `503` when
+unconfigured. Authentication errors never return the token.
+
+Only `POST /api/auth/verify` and the exact reserved inbound shape
+`POST /api/webhooks/{webhookId}` bypass management authentication; verification
+still validates the bearer header itself. Webhook IDs contain 1–64 URL-safe
+letters, digits, underscores or hyphens. Nested webhook paths and other methods
+require administrator authentication. `OPTIONS` requests pass through to the
+existing CORS/MVC policy without authentication; this does not grant new origins
+access. Health/actuator routes outside `/api/**` retain their existing behavior.
+
+The future browser login will hold the token in memory only and require sign-in
+again after refresh. This is a shared administrator identity, not multi-user
+authentication: there are no accounts, sessions, roles, individual revocation,
+or per-user audit identity. Use HTTPS outside local development. No token is
+stored in PostgreSQL or delivered in frontend configuration.

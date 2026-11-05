@@ -15,3 +15,7 @@ spring:
   h2:
     console:
       enabled: true
+
+flowforge:
+  security:
+    admin-token: test-only-flowforge-admin-token-0123456789

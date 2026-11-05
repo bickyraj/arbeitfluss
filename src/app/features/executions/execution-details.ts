@@ -1,4 +1,4 @@
-import { Component, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output, signal } from '@angular/core';
 import { forkJoin, switchMap, takeWhile, tap, timer } from 'rxjs';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
@@ -12,7 +12,7 @@ import type {
 
 @Component({
   selector: 'app-execution-details',
-  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (errorMessage()) {
       <div role="alert" class="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
@@ -25,6 +25,7 @@ import type {
             <p class="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Execution details</p>
             <h2 class="mt-1 break-all text-lg font-semibold text-slate-900">{{ run.workflowName }}</h2>
             <p class="mt-1 break-all font-mono text-xs text-slate-500">{{ run.id }}</p>
+            <p class="mt-1 text-xs text-slate-500">Trigger: {{ run.triggerType }} · Received {{ run.createdAt | date: 'medium' }}</p>
           </div>
           <span class="rounded-full px-2.5 py-1 text-xs font-semibold"
             [class.bg-amber-50]="run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'CANCELLING'"

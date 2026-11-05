@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
@@ -34,7 +35,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@Import(ExecutionDispatchIntegrationTest.BlockingExecutorConfiguration.class)
+@Import({
+        MockMvcAdminAuthConfiguration.class,
+        ExecutionDispatchIntegrationTest.BlockingExecutorConfiguration.class
+})
 class ExecutionDispatchIntegrationTest {
     private static volatile CountDownLatch executorStarted = new CountDownLatch(1);
     private static volatile CountDownLatch allowExecutorToFinish = new CountDownLatch(1);

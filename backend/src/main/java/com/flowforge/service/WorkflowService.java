@@ -20,10 +20,16 @@ public class WorkflowService {
 
     private final WorkflowRepository workflowRepository;
     private final ObjectMapper objectMapper;
+    private final WebhookRegistrationService webhookRegistrationService;
 
-    public WorkflowService(WorkflowRepository workflowRepository, ObjectMapper objectMapper) {
+    public WorkflowService(
+            WorkflowRepository workflowRepository,
+            ObjectMapper objectMapper,
+            WebhookRegistrationService webhookRegistrationService
+    ) {
         this.workflowRepository = workflowRepository;
         this.objectMapper = objectMapper;
+        this.webhookRegistrationService = webhookRegistrationService;
     }
 
     @Transactional
@@ -37,7 +43,9 @@ public class WorkflowService {
                 definition
         );
 
-        return WorkflowResponse.fromEntity(workflowRepository.saveAndFlush(workflow));
+        Workflow savedWorkflow = workflowRepository.saveAndFlush(workflow);
+        webhookRegistrationService.synchronizeWorkflow(savedWorkflow);
+        return WorkflowResponse.fromEntity(savedWorkflow);
     }
 
     @Transactional(readOnly = true)
@@ -69,12 +77,15 @@ public class WorkflowService {
             workflow.setDefinition(request.definition());
         }
 
-        return WorkflowResponse.fromEntity(workflowRepository.saveAndFlush(workflow));
+        Workflow savedWorkflow = workflowRepository.saveAndFlush(workflow);
+        webhookRegistrationService.synchronizeWorkflow(savedWorkflow);
+        return WorkflowResponse.fromEntity(savedWorkflow);
     }
 
     @Transactional
     public void deleteWorkflow(UUID id) {
         Workflow workflow = findWorkflowOrThrow(id);
+        webhookRegistrationService.deleteWorkflowWebhooks(id);
         workflowRepository.delete(workflow);
     }
 

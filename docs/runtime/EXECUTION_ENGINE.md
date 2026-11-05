@@ -49,3 +49,5 @@ On single-instance startup, QUEUED executions are redispatched and prior RUNNING
 The in-process dispatcher and ordinary workflow retry do not provide exactly-once external side effects. A retry is a new full execution from the beginning and may repeat work already performed by the failed run. Cancellation and timeout do not roll back external side effects. Node executor implementations must honor thread interruption and configure bounded I/O; arbitrary non-cooperative Java code cannot be forcibly terminated safely.
 
 The HTTP Request node and its outbound-network protections, configuration and output contract are documented in [HTTP_REQUEST_NODE.md](HTTP_REQUEST_NODE.md).
+
+Webhook Trigger requests are authenticated and resolved through persistent backend registration, then saved as `WEBHOOK` executions and dispatched through the same asynchronous execution pipeline described above. Their limits, safe input shape, rate limit, activation behavior, and response contract are documented in [WEBHOOK_TRIGGER.md](WEBHOOK_TRIGGER.md).

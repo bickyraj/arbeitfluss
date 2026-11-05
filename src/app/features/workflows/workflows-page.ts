@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Ellipsis, Search, Workflow as WorkflowIcon, LucideAngularModule } from 'lucide-angular';
 import type { Workflow, WorkflowSortOption, WorkflowStatus, WorkflowStatusFilter, WorkflowViewMode } from '../../core/models/workflow.model';
@@ -120,7 +120,7 @@ const workflowSeed: Workflow[] = [
 
 @Component({
   selector: 'app-workflows-page',
-  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MainLayoutComponent, LucideAngularModule, RouterLink],
   template: `
     <app-main-layout [title]="'Workflows'">
@@ -611,10 +611,7 @@ export class WorkflowsPageComponent {
     const nextStatus: WorkflowStatus = workflow.status === 'Active' ? 'Inactive' : 'Active';
     this.workflowApi
       .updateWorkflow(workflowId, {
-        name: workflow.name,
-        description: workflow.description,
-        active: nextStatus === 'Active',
-        definition: this.buildWorkflowDefinition(workflow.name)
+        active: nextStatus === 'Active'
       })
       .subscribe({
         next: (updatedWorkflow) => {

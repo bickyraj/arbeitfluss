@@ -44,9 +44,12 @@ describe('WorkflowEditor execution flow', () => {
           id: 'workflow-123',
           name: 'Test workflow',
           description: 'Saved definition',
+          active: true,
           definition: savedDefinition
         });
-      })
+      }),
+      getWebhooks: vi.fn(() => of([])),
+      regenerateWebhookSecret: vi.fn(() => of({ secret: 'one-time-secret' }))
     };
     executionApi = {
       startExecution: vi.fn(() => of({ id: 'execution-456', status: 'QUEUED', createdAt: '2026-11-05T00:00:00Z' })),
@@ -99,6 +102,31 @@ describe('WorkflowEditor execution flow', () => {
       .toContain('"user": "Alex"');
     expect((fixture.nativeElement.querySelector('#execution-trigger-input') as HTMLTextAreaElement).value)
       .toContain('"message": "Hello FlowForge"');
+  });
+
+  it('adds a Webhook Trigger with POST, secret-token authentication, and a backend-owned endpoint placeholder', () => {
+    const root = fixture.nativeElement as HTMLElement;
+    const webhookButton = Array.from(root.querySelectorAll('button'))
+      .find((button: HTMLButtonElement) => button.textContent?.includes('Webhook Trigger')) as HTMLButtonElement;
+    webhookButton.click();
+    fixture.detectChanges();
+
+    const methodSelect = Array.from(root.querySelectorAll('label'))
+      .find((label) => label.textContent?.includes('HTTP method'))
+      ?.querySelector('select');
+    const authenticationSelect = Array.from(root.querySelectorAll('label'))
+      .find((label) => label.textContent?.includes('Authentication'))
+      ?.querySelector('select');
+    const enabled = Array.from(root.querySelectorAll('label'))
+      .find((label) => label.textContent?.includes('Webhook node enabled'))
+      ?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+
+    expect(methodSelect?.value).toBe('POST');
+    expect(authenticationSelect?.value).toBe('secret-token');
+    expect(enabled.checked).toBe(true);
+    expect(root.textContent).toContain('Save this workflow to provision its stable endpoint.');
+    expect(root.textContent).toContain('shown only once after generation');
+    expect(root.textContent).not.toContain('example.com/webhook');
   });
 
   it('validates edited JSON and starts execution with the saved workflow ID and parsed input', async () => {

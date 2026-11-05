@@ -1,4 +1,5 @@
 export type ExecutionStatus = 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+export type ExecutionTriggerType = 'MANUAL' | 'WEBHOOK';
 export type NodeExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
 export type ExecutionLogLevel = 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -12,7 +13,7 @@ export interface ExecutionResponse {
   id: string;
   workflowId: string;
   workflowName: string;
-  triggerType: string;
+  triggerType: ExecutionTriggerType;
   status: ExecutionStatus;
   startedAt: string | null;
   completedAt: string | null;

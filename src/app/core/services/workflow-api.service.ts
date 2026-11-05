@@ -23,6 +23,15 @@ export interface WorkflowCreatePayload {
   definition?: Record<string, unknown>;
 }
 
+export interface WebhookRegistrationResponse {
+  nodeId: string;
+  webhookId: string;
+  httpMethod: 'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+  authenticationMode: 'NONE' | 'SECRET_TOKEN';
+  enabled: boolean;
+  secretConfigured: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class WorkflowApiService {
   private readonly http = inject(HttpClient);
@@ -44,7 +53,7 @@ export class WorkflowApiService {
     );
   }
 
-  updateWorkflow(id: string, payload: WorkflowCreatePayload): Observable<Workflow> {
+  updateWorkflow(id: string, payload: Partial<WorkflowCreatePayload>): Observable<Workflow> {
     return this.http.put<WorkflowApiResponse>(`${this.baseUrl}/${id}`, payload).pipe(
       map((item) => this.toWorkflow(item))
     );
@@ -52,6 +61,17 @@ export class WorkflowApiService {
 
   deleteWorkflow(id: string): Observable<void> {
     return this.http.delete<void>(`${this.baseUrl}/${id}`);
+  }
+
+  getWebhooks(id: string): Observable<WebhookRegistrationResponse[]> {
+    return this.http.get<WebhookRegistrationResponse[]>(`${this.baseUrl}/${id}/webhooks`);
+  }
+
+  regenerateWebhookSecret(workflowId: string, nodeId: string): Observable<{ secret: string }> {
+    return this.http.post<{ secret: string }>(
+      `${this.baseUrl}/${workflowId}/webhooks/${encodeURIComponent(nodeId)}/secret`,
+      {}
+    );
   }
 
   private toWorkflow(item: WorkflowApiResponse): Workflow {

@@ -8,6 +8,7 @@ import com.flowforge.executor.ManualTriggerExecutor;
 import com.flowforge.executor.IfConditionExecutor;
 import com.flowforge.executor.NodeExecutorRegistry;
 import com.flowforge.executor.SetDataExecutor;
+import com.flowforge.executor.WebhookTriggerExecutor;
 import com.flowforge.runtime.WorkflowGraphPlan;
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +21,7 @@ class WorkflowGraphValidatorTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final WorkflowGraphValidator validator = new WorkflowGraphValidator(new NodeExecutorRegistry(List.of(
             new ManualTriggerExecutor(),
+            new WebhookTriggerExecutor(),
             new SetDataExecutor(),
             new LogMessageExecutor(),
             new IfConditionExecutor()
@@ -91,7 +93,7 @@ class WorkflowGraphValidatorTest {
                 """, "contains a cycle");
         assertInvalid("""
                 {"nodes":[{"id":"not-a-trigger","type":"set-data"}],"connections":[]}
-                """, "must contain one manual-trigger");
+                """, "must contain one trigger node");
         assertInvalid("""
                 {"nodes":[{"id":"trigger","type":"manual-trigger"},{"id":"unknown","type":"http-request"}],"connections":[
                   {"id":"edge","sourceNodeId":"trigger","sourceHandle":"output","targetNodeId":"unknown","targetHandle":"input"}]}

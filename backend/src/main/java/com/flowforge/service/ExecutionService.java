@@ -80,8 +80,28 @@ public class ExecutionService {
 
     @Transactional
     public ExecutionStartResponse startExecution(UUID workflowId, ExecutionRequest request) {
+        return startExecution(workflowId, request, ExecutionTriggerType.MANUAL);
+    }
+
+    @Transactional
+    public ExecutionStartResponse startWebhookExecution(UUID workflowId, JsonNode triggerInput) {
+        return startExecution(
+                workflowId,
+                new ExecutionRequest(triggerInput, null),
+                ExecutionTriggerType.WEBHOOK
+        );
+    }
+
+    private ExecutionStartResponse startExecution(
+            UUID workflowId,
+            ExecutionRequest request,
+            ExecutionTriggerType triggerType
+    ) {
         Workflow workflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
+        if (triggerType == ExecutionTriggerType.WEBHOOK && !workflow.isActive()) {
+            throw new ResourceNotFoundException("Workflow not found");
+        }
         JsonNode triggerInput = request == null || request.triggerInput() == null
                 ? objectMapper.createObjectNode()
                 : request.triggerInput().deepCopy();
@@ -95,12 +115,25 @@ public class ExecutionService {
         JsonNode definition = snapshot.definition();
         validatePayloadSize(definition, MAX_DEFINITION_SNAPSHOT_BYTES, "Workflow definition");
         WorkflowGraphPlan graph = graphValidator.validate(definition);
+        String triggerTypeForRequest = graph.executionOrder().stream()
+                .filter(node -> node.id().equals(graph.triggerNodeId()))
+                .map(WorkflowGraphPlan.Node::type)
+                .findFirst()
+                .orElseThrow(() -> new InvalidExecutionRequestException("Workflow trigger node is missing"));
+        String expectedTriggerNodeType = triggerType == ExecutionTriggerType.WEBHOOK
+                ? "webhook-trigger"
+                : "manual-trigger";
+        if (!expectedTriggerNodeType.equals(triggerTypeForRequest)) {
+            throw new InvalidExecutionRequestException(
+                    "Execution trigger type does not match the workflow's root trigger"
+            );
+        }
 
         Execution execution = new Execution(
                 workflow,
                 snapshot.workflowName(),
                 snapshot.definition(),
-                ExecutionTriggerType.MANUAL,
+                triggerType,
                 triggerInput,
                 timeoutSeconds,
                 null
